@@ -1,5 +1,8 @@
 package com.lostf1sh.pixelplayeross.data.service.player
 
+import com.lostf1sh.pixelplayeross.data.model.EffectPreset
+import com.lostf1sh.pixelplayeross.data.model.EqPreset
+import com.lostf1sh.pixelplayeross.data.model.FilterPreset
 import com.lostf1sh.pixelplayeross.data.model.MixPreset
 import com.lostf1sh.pixelplayeross.data.model.MixTransition
 import com.lostf1sh.pixelplayeross.data.model.VolumeKeyframe
@@ -161,9 +164,26 @@ object MixPlanner {
                 inVolume = lines.incoming,
                 preset = MixPreset.AUTO,
                 volumePreset = volumePreset,
+                eq = autoEq(reason),
+                filter = FilterPreset.NONE,
+                effects = EffectPreset.NONE,
+                loopBeats = 0,
             ),
             reason,
         )
+    }
+
+    /**
+     * The EQ Auto uses. Where both songs play together at full sound (a crossfade between two
+     * steady songs) their basses add up to a boomy, muddy middle; handing the bass over in the
+     * middle, as a DJ does, keeps one bass line at a time. Where the songs barely overlap at full
+     * sound (a natural outro, a soft intro, two hard ends one after the other) there is nothing
+     * to clear up, so the sound is left alone. Filters, effects and loops change a song's
+     * character and stay the user's choice.
+     */
+    internal fun autoEq(reason: AutoReason): EqPreset = when (reason) {
+        AutoReason.TEMPO_MATCHED, AutoReason.DEFAULT -> EqPreset.CENTRE_BASS_SWAP
+        AutoReason.NATURAL_OUTRO, AutoReason.SOFT_INTRO, AutoReason.BOTH_PUNCHY -> EqPreset.NONE
     }
 
     /** Natural outro: the outgoing song is left to fade by itself while the incoming one builds in. */

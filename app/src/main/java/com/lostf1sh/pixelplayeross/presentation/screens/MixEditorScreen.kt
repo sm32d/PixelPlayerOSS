@@ -36,6 +36,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Redo
+import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.MoreVert
@@ -166,6 +168,8 @@ fun MixEditorScreen(
                                 text = stringResource(R.string.dj_mix_beta),
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                maxLines = 1,
+                                softWrap = false,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
                             )
                         }
@@ -353,11 +357,23 @@ private fun MixEditorContent(
             )
         }
 
-        Text(
-            text = stringResource(R.string.dj_mix_presets),
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.padding(start = 4.dp, top = 8.dp),
-        )
+        // Undo and redo sit with the presets (the top bar has no room left beside the title).
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(R.string.dj_mix_presets),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(start = 4.dp).weight(1f),
+            )
+            IconButton(onClick = viewModel::undo, enabled = state.canUndo) {
+                Icon(Icons.AutoMirrored.Rounded.Undo, contentDescription = stringResource(R.string.dj_mix_undo_cd))
+            }
+            IconButton(onClick = viewModel::redo, enabled = state.canRedo) {
+                Icon(Icons.AutoMirrored.Rounded.Redo, contentDescription = stringResource(R.string.dj_mix_redo_cd))
+            }
+        }
         PresetStrip(selected = mix.preset, onSelect = viewModel::applyPreset)
 
         // One row per lane, as in Spotify: the lane's current preset, tap for the list. The lane
@@ -814,8 +830,8 @@ private fun WindowChip(
 
 @Composable
 private fun windowLabel(bars: Int?, windowMs: Long): String =
-    if (bars != null) stringResource(R.string.dj_mix_bars_option, bars)
-    else stringResource(R.string.dj_mix_seconds_option, (windowMs / 1000f).roundToInt())
+    if (bars != null) pluralStringResource(R.plurals.dj_mix_bars_option, bars, bars)
+    else (windowMs / 1000f).roundToInt().let { pluralStringResource(R.plurals.dj_mix_seconds_option, it, it) }
 
 // --- Timeline -------------------------------------------------------------------------------
 

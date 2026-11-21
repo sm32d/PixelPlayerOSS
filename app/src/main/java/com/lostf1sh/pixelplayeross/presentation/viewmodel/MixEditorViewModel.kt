@@ -2,6 +2,7 @@ package com.lostf1sh.pixelplayeross.presentation.viewmodel
 
 import android.content.Context
 import android.net.Uri
+import android.os.SystemClock
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -24,6 +25,7 @@ import com.lostf1sh.pixelplayeross.data.repository.MusicRepository
 import com.lostf1sh.pixelplayeross.data.repository.TransitionRepository
 import com.lostf1sh.pixelplayeross.data.service.player.DualPlayerEngine
 import com.lostf1sh.pixelplayeross.data.service.player.MixEditing
+import com.lostf1sh.pixelplayeross.data.service.player.MixHistory
 import com.lostf1sh.pixelplayeross.data.service.player.MixLanes
 import com.lostf1sh.pixelplayeross.data.service.player.MixPlanner
 import com.lostf1sh.pixelplayeross.data.service.player.MixPresets
@@ -64,6 +66,8 @@ data class MixEditorUiState(
     val mix: MixTransition? = null,
     val isDirty: Boolean = false,
     val isSaved: Boolean = false,
+    val canUndo: Boolean = false,
+    val canRedo: Boolean = false,
     val canPreview: Boolean = false,
     val isPreviewPlaying: Boolean = false,
     /**
@@ -275,7 +279,7 @@ class MixEditorViewModel @Inject constructor(
     fun shiftOutgoing(deltaMs: Long) {
         val state = _uiState.value
         val from = state.from ?: return
-        editMix(markCustom = false) { mix ->
+        editMix(markCustom = false, group = "slide out") { mix ->
             val clamp = { ms: Long -> MixEditing.shiftOutPoint(mix, ms - mix.outPointMs, from.duration).outPointMs }
             val slide = MixEditing.slide(mix.outPointMs, deltaMs, outSlide, { MixEditing.snapToBeat(it, state.fromGrid) }, clamp)
             outSlide = slide
@@ -290,7 +294,7 @@ class MixEditorViewModel @Inject constructor(
     fun shiftIncoming(deltaMs: Long) {
         val state = _uiState.value
         val to = state.to ?: return
-        editMix(markCustom = false) { mix ->
+        editMix(markCustom = false, group = "slide in") { mix ->
             val clamp = { ms: Long -> MixEditing.shiftInStart(mix, ms - mix.inStartMs, to.duration).inStartMs }
             val snap = { ms: Long ->
                 (if (mix.beatmatchOn) Beatmatch.plan(mix, state.fromGrid, state.toGrid, to.duration, ms)?.inStartMs else null)
@@ -302,7 +306,7 @@ class MixEditorViewModel @Inject constructor(
         }
     }
 
-    fun moveKeyframe(outgoing: Boolean, index: Int, t: Float, v: Float) = editMix { mix ->
+    fun moveKeyframe(outgoing: Boolean, index: Int, t: Float, v: Float) = editMix(group = "point $outgoing $index") { mix ->
         if (outgoing) mix.copy(outVolume = MixEditing.moveKeyframe(mix.outVolume, index, t, v))
         else mix.copy(inVolume = MixEditing.moveKeyframe(mix.inVolume, index, t, v))
     }
@@ -389,16 +393,54 @@ class MixEditorViewModel @Inject constructor(
         return mix.copy(inStartMs = plan.inStartMs)
     }
 
-    private fun editMix(markCustom: Boolean = true, transform: (MixTransition) -> MixTransition) {
+    private val history = MixHistory()
+
+    /**
+     * Applies an edit. [group] names a gesture whose many small edits (a drag) undo as one step;
+     * null makes the edit a step of its own.
+     */
+    private fun editMix(
+        markCustom: Boolean = true,
+        group: String? = null,
+        transform: (MixTransition) -> MixTransition,
+    ) {
         // Not while the automatic mix is still being worked out: the edit would be replaced by it.
         if (_uiState.value.isAnalyzing) return
         stopPreview()
+        val before = _uiState.value.mix
         _uiState.update { state ->
             val current = state.mix ?: return@update state
             val edited = transform(current).let { if (markCustom) MixEditing.custom(it) else it }
                 .let { aligned(it, state) }
             state.copy(mix = edited, isDirty = edited != baseline, isSaved = false)
         }
+        val after = _uiState.value.mix
+        if (before != null && after != before) {
+            history.record(before, group, SystemClock.elapsedRealtime())
+            publishHistory()
+        }
+    }
+
+    fun undo() = stepHistory { history.undo(it) }
+
+    fun redo() = stepHistory { history.redo(it) }
+
+    private fun stepHistory(step: (MixTransition) -> MixTransition?) {
+        if (_uiState.value.isAnalyzing) return
+        val current = _uiState.value.mix ?: return
+        val target = step(current) ?: return
+        stopPreview()
+        outSlide = null
+        inSlide = null
+        _uiState.update { state ->
+            val mix = aligned(target, state)
+            state.copy(mix = mix, isDirty = mix != baseline, isSaved = false)
+        }
+        publishHistory()
+    }
+
+    private fun publishHistory() {
+        _uiState.update { it.copy(canUndo = history.canUndo, canRedo = history.canRedo) }
     }
 
     // --- Save ------------------------------------------------------------------------------

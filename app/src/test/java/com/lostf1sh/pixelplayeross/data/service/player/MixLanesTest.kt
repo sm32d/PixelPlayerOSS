@@ -119,10 +119,22 @@ class MixLanesTest {
         val wave = MixPresets.apply(mix, MixPreset.WAVE)
         assertEquals(EqPreset.CENTRE_BASS_SWAP, wave.eq)
         assertEquals(FilterPreset.LOW_PASS_IN_LOW_PASS_OUT, wave.filter)
+        // Auto's crossfade hands the bass over and touches nothing else.
         val auto = MixPresets.apply(wave, MixPreset.AUTO)
-        assertEquals(EqPreset.NONE, auto.eq)
+        assertEquals(EqPreset.CENTRE_BASS_SWAP, auto.eq)
         assertEquals(FilterPreset.NONE, auto.filter)
-        assertFalse(MixLanes.usesDsp(auto))
+        assertEquals(EffectPreset.NONE, auto.effects)
+        // No transition plays no lanes at all.
+        assertFalse(MixLanes.usesDsp(MixPresets.apply(wave, MixPreset.NO_TRANSITION)))
+    }
+
+    @Test
+    fun `Auto swaps the bass only where both songs play at full sound`() {
+        assertEquals(EqPreset.CENTRE_BASS_SWAP, MixPlanner.autoEq(MixPlanner.AutoReason.TEMPO_MATCHED))
+        assertEquals(EqPreset.CENTRE_BASS_SWAP, MixPlanner.autoEq(MixPlanner.AutoReason.DEFAULT))
+        assertEquals(EqPreset.NONE, MixPlanner.autoEq(MixPlanner.AutoReason.NATURAL_OUTRO))
+        assertEquals(EqPreset.NONE, MixPlanner.autoEq(MixPlanner.AutoReason.SOFT_INTRO))
+        assertEquals(EqPreset.NONE, MixPlanner.autoEq(MixPlanner.AutoReason.BOTH_PUNCHY))
     }
 
     @Test

@@ -91,9 +91,18 @@ object MixLanes {
     fun pinned(mix: MixTransition): MixTransition =
         mix.copy(eq = eqOf(mix), filter = filterOf(mix), effects = effectsOf(mix))
 
-    /** The lane presets a style sets: its recipe's, none for Auto and No transition, unchanged for Custom. */
+    /**
+     * The lane presets a style sets: its recipe's; for Auto's plain crossfade the bass swap Auto
+     * gives a crossfade (see [MixPlanner.autoEq]); none for No transition; unchanged for Custom.
+     */
     fun forStyle(mix: MixTransition, style: MixPreset): MixTransition = when (style) {
         MixPreset.CUSTOM -> pinned(mix)
+        MixPreset.AUTO -> mix.copy(
+            eq = MixPlanner.autoEq(MixPlanner.AutoReason.DEFAULT),
+            filter = FilterPreset.NONE,
+            effects = EffectPreset.NONE,
+            loopBeats = 0,
+        )
         // No style loops.
         else -> mix.copy(
             eq = MixStyles.recipes[style]?.eq ?: EqPreset.NONE,
