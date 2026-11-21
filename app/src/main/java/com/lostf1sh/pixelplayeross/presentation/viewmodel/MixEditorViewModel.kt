@@ -5,6 +5,8 @@ import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.lostf1sh.pixelplayeross.data.media.BeatGrid
+import timber.log.Timber
 import com.lostf1sh.pixelplayeross.data.media.TagBpmReader
 import com.lostf1sh.pixelplayeross.data.media.WaveformData
 import com.lostf1sh.pixelplayeross.data.media.WaveformRepository
@@ -68,6 +70,10 @@ data class MixEditorUiState(
 ) {
     val windowOptions: List<MixPlanner.WindowOption>
         get() = from?.let { MixPlanner.windowOptions(fromBpm, it.duration) }.orEmpty()
+
+    /** The songs' beat grids, when the audio showed a clear one. */
+    val fromGrid: BeatGrid? get() = fromWaveform?.beatGrid?.takeIf { it.isReliable }
+    val toGrid: BeatGrid? get() = toWaveform?.beatGrid?.takeIf { it.isReliable }
 }
 
 @HiltViewModel
@@ -176,6 +182,26 @@ class MixEditorViewModel @Inject constructor(
                 if (outgoing) s.copy(fromWaveform = full ?: s.fromWaveform, fromWaveformLoading = false)
                 else s.copy(toWaveform = full ?: s.toWaveform, toWaveformLoading = false)
             }
+            useDetectedTempo()
+        }
+    }
+
+    /**
+     * A song whose tags carry no BPM gets the tempo heard in its audio (shown in its header and
+     * used for the bar lengths). A tag BPM, when there is one, is left as the user's library has it.
+     */
+    private fun useDetectedTempo() {
+        _uiState.update { s ->
+            s.copy(
+                fromBpm = s.fromBpm ?: s.fromGrid?.bpm,
+                toBpm = s.toBpm ?: s.toGrid?.bpm,
+            )
+        }
+        _uiState.value.let { s ->
+            Timber.tag("MixEditor").d(
+                "Beat grids: from=%s, to=%s",
+                s.fromWaveform?.beatGrid, s.toWaveform?.beatGrid,
+            )
         }
     }
 
@@ -194,16 +220,31 @@ class MixEditorViewModel @Inject constructor(
         editMix(markCustom = false) { MixEditing.withWindow(it, option, from.duration, to.duration) }
     }
 
-    /** Slides the mix window along the outgoing song by [deltaMs]. */
+    private var outSlide: MixEditing.Slide? = null
+    private var inSlide: MixEditing.Slide? = null
+
+    /** Slides the mix window along the outgoing song by [deltaMs]; its start snaps to the song's beats. */
     fun shiftOutgoing(deltaMs: Long) {
-        val from = _uiState.value.from ?: return
-        editMix(markCustom = false) { MixEditing.shiftOutPoint(it, deltaMs, from.duration) }
+        val state = _uiState.value
+        val from = state.from ?: return
+        editMix(markCustom = false) { mix ->
+            val clamp = { ms: Long -> MixEditing.shiftOutPoint(mix, ms - mix.outPointMs, from.duration).outPointMs }
+            val slide = MixEditing.slide(mix.outPointMs, deltaMs, outSlide, state.fromGrid, clamp)
+            outSlide = slide
+            mix.copy(outPointMs = slide.shownMs)
+        }
     }
 
-    /** Slides the incoming song under the window by [deltaMs]. */
+    /** Slides the incoming song under the window by [deltaMs]; where it starts snaps to its beats. */
     fun shiftIncoming(deltaMs: Long) {
-        val to = _uiState.value.to ?: return
-        editMix(markCustom = false) { MixEditing.shiftInStart(it, deltaMs, to.duration) }
+        val state = _uiState.value
+        val to = state.to ?: return
+        editMix(markCustom = false) { mix ->
+            val clamp = { ms: Long -> MixEditing.shiftInStart(mix, ms - mix.inStartMs, to.duration).inStartMs }
+            val slide = MixEditing.slide(mix.inStartMs, deltaMs, inSlide, state.toGrid, clamp)
+            inSlide = slide
+            mix.copy(inStartMs = slide.shownMs)
+        }
     }
 
     fun moveKeyframe(outgoing: Boolean, index: Int, t: Float, v: Float) = editMix { mix ->
@@ -264,6 +305,7 @@ class MixEditorViewModel @Inject constructor(
                         toWaveform = s.toWaveform ?: incomingAnalysis.head,
                     )
                 }
+                useDetectedTempo()
                 if (!replaceMix) return@launch
 
                 val smart = MixPlanner.fit(autoMix(from, fromBpm, toBpm), from.duration, to.duration)

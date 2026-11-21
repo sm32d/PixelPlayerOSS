@@ -1,5 +1,6 @@
 package com.lostf1sh.pixelplayeross.data.service.player
 
+import com.lostf1sh.pixelplayeross.data.media.BeatGrid
 import com.lostf1sh.pixelplayeross.data.model.MixPreset
 import com.lostf1sh.pixelplayeross.data.model.MixTransition
 import com.lostf1sh.pixelplayeross.data.model.VolumeKeyframe
@@ -83,6 +84,27 @@ object MixEditing {
             outPointMs = end - option.windowMs,
         )
         return MixPlanner.fit(resized, outgoingDurationMs, incomingDurationMs) ?: mix
+    }
+
+    /** The beat of [grid] nearest [ms] (never before the song's start); [ms] as is without a reliable grid. */
+    fun snapToBeat(ms: Long, grid: BeatGrid?): Long =
+        if (grid == null || !grid.isReliable) ms else grid.nearestBeatMs(ms).coerceAtLeast(0L)
+
+    /**
+     * A song being dragged along its lane: [rawMs] is where the finger has taken it, [shownMs]
+     * where it was snapped to. Small drags add up in [rawMs], so the song still moves on to the
+     * next beat instead of snapping back every time.
+     */
+    data class Slide(val rawMs: Long, val shownMs: Long)
+
+    /**
+     * Moves a song position by [deltaMs] and snaps it to [grid]'s beats. [clamp] keeps a position
+     * playable; [slide] carries on a drag whose last result is still [currentMs].
+     */
+    fun slide(currentMs: Long, deltaMs: Long, slide: Slide?, grid: BeatGrid?, clamp: (Long) -> Long): Slide {
+        val base = if (slide != null && slide.shownMs == currentMs) slide.rawMs else currentMs
+        val raw = clamp(base + deltaMs)
+        return Slide(rawMs = raw, shownMs = clamp(snapToBeat(raw, grid)))
     }
 
     /** Marks [mix] as hand-edited. */

@@ -3,6 +3,7 @@ package com.lostf1sh.pixelplayeross.data.media
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class WaveformDataTest {
@@ -71,6 +72,37 @@ class WaveformDataTest {
     fun `encode and decode round trip`() {
         val data = WaveformData(50, ByteArray(300) { (it % 256).toByte() })
         assertEquals(data, WaveformData.decode(data.encode()))
+    }
+
+    @Test
+    fun `bands and beat grid survive the cache`() {
+        val data = WaveformData(
+            50, ByteArray(20) { 9 },
+            lows = ByteArray(20) { 1 }, mids = ByteArray(20) { 2 }, highs = ByteArray(20) { 3 },
+            beatGrid = BeatGrid(bpm = 127.5f, downbeatMs = 312.25, confidence = 0.8f),
+        )
+        assertEquals(data, WaveformData.decode(data.encode()))
+    }
+
+    @Test
+    fun `an old version 1 cache file is decoded again`() {
+        val v1 = java.nio.ByteBuffer.allocate(12 + 4).putInt(0x57465631).putInt(50).putInt(4).put(ByteArray(4)).array()
+        assertNull(WaveformData.decode(v1))
+    }
+
+    @Test
+    fun `bands follow where the sound is`() {
+        val rate = 22_050
+        fun tone(hz: Double) = ShortArray(rate) { (kotlin.math.sin(2 * Math.PI * hz * it / rate) * 16000).toInt().toShort() }
+        fun bands(hz: Double): Triple<Float, Float, Float> =
+            PeakAccumulator(rate, 1, 50).apply { add(tone(hz)) }.finish().bandsAtMs(500)!!
+
+        val bass = bands(60.0)
+        assertTrue(bass.first > 4 * bass.second && bass.first > 4 * bass.third, "60 Hz is bass: $bass")
+        val mid = bands(700.0)
+        assertTrue(mid.second > 2 * mid.first && mid.second > 2 * mid.third, "700 Hz is mids: $mid")
+        val high = bands(6_000.0)
+        assertTrue(high.third > 4 * high.first && high.third > 2 * high.second, "6 kHz is highs: $high")
     }
 
     @Test

@@ -95,6 +95,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.lostf1sh.pixelplayeross.R
+import com.lostf1sh.pixelplayeross.data.media.BeatGrid
 import com.lostf1sh.pixelplayeross.data.media.WaveformData
 import androidx.compose.material3.Switch
 import androidx.compose.ui.draw.alpha
@@ -773,7 +774,18 @@ private fun MixTimeline(
     val hitRadiusPx = with(density) { 28.dp.toPx() }
     val lanePadPx = with(density) { 16.dp.toPx() }
 
-    val waveColor = MaterialTheme.colorScheme.onSurfaceVariant
+    // Fixed hues (bass blue, mids teal, highs pale) so the bands read the same on any theme and
+    // never match the songs' line colours; nudged towards the theme so they sit with it.
+    val primary = MaterialTheme.colorScheme.primary
+    val bandColors = remember(primary) {
+        WaveColors(
+            plain = Color.Unspecified,
+            lows = androidx.compose.ui.graphics.lerp(Color(0xFF3D6FD6), primary, 0.12f),
+            mids = androidx.compose.ui.graphics.lerp(Color(0xFF3FAE9E), primary, 0.12f),
+            highs = androidx.compose.ui.graphics.lerp(Color(0xFFDDE3F0), primary, 0.08f),
+        )
+    }.copy(plain = MaterialTheme.colorScheme.onSurfaceVariant)
+    val barLineColor = MaterialTheme.colorScheme.onSurface
     val gridColor = MaterialTheme.colorScheme.outlineVariant
     val windowTint = MaterialTheme.colorScheme.primary
     val playheadColor = MaterialTheme.colorScheme.onSurface
@@ -853,19 +865,27 @@ private fun MixTimeline(
             size = androidx.compose.ui.geometry.Size(g.xOf(mix.windowMs.toFloat()) - g.xOf(0f), size.height),
         )
 
-        // Bar grid, from the outgoing song's tempo, counted from the window start.
-        state.fromBpm?.let { bpm ->
-            val barMs = 4 * 60_000f / bpm
-            var rel = -(g.padMs / barMs).toInt() * barMs
-            while (rel <= g.windowMs + g.padMs) {
-                val x = g.xOf(rel)
-                drawLine(gridColor.copy(alpha = 0.5f), Offset(x, 0f), Offset(x, size.height), strokeWidth = 1f)
-                rel += barMs
+        // Each song's own beats and bars, where its audio showed them; otherwise bars from the
+        // outgoing song's tag tempo, counted from the window start.
+        val fromGrid = state.fromGrid
+        val toGrid = state.toGrid
+        if (fromGrid == null && toGrid == null) {
+            state.fromBpm?.let { bpm ->
+                val barMs = 4 * 60_000f / bpm
+                var rel = -(g.padMs / barMs).toInt() * barMs
+                while (rel <= g.windowMs + g.padMs) {
+                    val x = g.xOf(rel)
+                    drawLine(gridColor.copy(alpha = 0.5f), Offset(x, 0f), Offset(x, size.height), strokeWidth = 1f)
+                    rel += barMs
+                }
             }
         }
 
-        drawWaveform(g, state.fromWaveform, mix.outPointMs, outgoing = true, color = waveColor, windowMs = mix.windowMs)
-        drawWaveform(g, state.toWaveform, mix.inStartMs, outgoing = false, color = waveColor, windowMs = mix.windowMs)
+        drawWaveform(g, state.fromWaveform, mix.outPointMs, outgoing = true, colors = bandColors, windowMs = mix.windowMs)
+        drawWaveform(g, state.toWaveform, mix.inStartMs, outgoing = false, colors = bandColors, windowMs = mix.windowMs)
+        // Over the waveform, so the bars stay visible on loud passages; under the volume lines.
+        fromGrid?.let { drawBeatGrid(g, it, mix.outPointMs, outgoing = true, color = barLineColor) }
+        toGrid?.let { drawBeatGrid(g, it, mix.inStartMs, outgoing = false, color = barLineColor) }
 
         // Lane divider.
         drawLine(gridColor, Offset(0f, g.laneHeight), Offset(size.width, g.laneHeight), strokeWidth = 2f)
@@ -886,12 +906,50 @@ private fun MixTimeline(
     }
 }
 
+/** Waveform colours: [plain] without band data; otherwise bass, mids and highs. */
+private data class WaveColors(val plain: Color, val lows: Color, val mids: Color, val highs: Color)
+
+/**
+ * A song's beats in its lane: a faint tick per beat and a line per bar, placed by the song's own
+ * beat grid (so they line up with its hits wherever the song is slid to).
+ */
+private fun DrawScope.drawBeatGrid(
+    g: TimelineGeometry,
+    grid: BeatGrid,
+    songTimeAtWindowStartMs: Long,
+    outgoing: Boolean,
+    color: Color,
+) {
+    val top = g.laneTop(outgoing)
+    val bottom = top + g.laneHeight
+    val firstSongMs = songTimeAtWindowStartMs + g.relOf(0f)
+    val lastSongMs = songTimeAtWindowStartMs + g.relOf(size.width)
+    var index = grid.beatIndexAtOrBefore(firstSongMs.toDouble())
+    // Too dense to read when zoomed far out: then only bars.
+    val beatPx = (grid.beatMs * size.width / g.totalMs).toFloat()
+    while (true) {
+        val songMs = grid.beatTimeMs(index)
+        if (songMs > lastSongMs) break
+        if (songMs >= 0) {
+            val x = g.xOf((songMs - songTimeAtWindowStartMs).toFloat())
+            if (grid.isDownbeat(index)) {
+                drawLine(color.copy(alpha = 0.5f), Offset(x, top), Offset(x, bottom), strokeWidth = 1.dp.toPx())
+            } else if (beatPx >= 4.dp.toPx()) {
+                val tick = g.laneHeight * 0.08f
+                drawLine(color.copy(alpha = 0.35f), Offset(x, top), Offset(x, top + tick), strokeWidth = 1f)
+                drawLine(color.copy(alpha = 0.35f), Offset(x, bottom - tick), Offset(x, bottom), strokeWidth = 1f)
+            }
+        }
+        index++
+    }
+}
+
 private fun DrawScope.drawWaveform(
     g: TimelineGeometry,
     waveform: WaveformData?,
     songTimeAtWindowStartMs: Long,
     outgoing: Boolean,
-    color: Color,
+    colors: WaveColors,
     windowMs: Long,
 ) {
     if (waveform == null) return
@@ -899,6 +957,8 @@ private fun DrawScope.drawWaveform(
     val step = 4.dp.toPx()
     val centerY = g.laneTop(outgoing) + g.laneHeight / 2f
     val maxHalf = g.laneHeight * 0.42f
+    val minHalf = 1.5.dp.toPx()
+    val corner = androidx.compose.ui.geometry.CornerRadius(barWidth / 2)
     var x = 0f
     while (x < size.width) {
         val rel = g.relOf(x)
@@ -912,13 +972,27 @@ private fun DrawScope.drawWaveform(
         val peak = if (songMs < 0) 0f else waveform.peakAtMs(songMs)
         // The outgoing song stops after the window, the incoming one hasn't started before it.
         val audible = if (outgoing) rel <= windowMs else rel >= 0f
-        val half = (sqrt(peak) * maxHalf).coerceAtLeast(1.5.dp.toPx())
-        drawRoundRect(
-            color = color.copy(alpha = if (audible) 0.45f else 0.15f),
-            topLeft = Offset(x, centerY - half),
-            size = androidx.compose.ui.geometry.Size(barWidth, half * 2),
-            cornerRadius = androidx.compose.ui.geometry.CornerRadius(barWidth / 2),
+        val alpha = if (audible) 1f else 0.35f
+        val half = (sqrt(peak) * maxHalf).coerceAtLeast(minHalf)
+        fun bar(h: Float, color: Color, a: Float) = drawRoundRect(
+            color = color.copy(alpha = a * alpha),
+            topLeft = Offset(x, centerY - h),
+            size = androidx.compose.ui.geometry.Size(barWidth, h * 2),
+            cornerRadius = corner,
         )
+        val bands = if (songMs < 0) null else waveform.bandsAtMs(songMs)
+        val total = bands?.let { it.first + it.second + it.third } ?: 0f
+        if (bands == null || total <= 0f) {
+            bar(half, colors.plain, 0.45f)
+        } else {
+            // Nested bars: the whole height in the bass colour, the mids' and highs' share of the
+            // sound inside it, so a bar's colours show what it is made of.
+            bar(half, colors.lows, 0.6f)
+            val upper = (bands.second + bands.third) / total
+            if (upper > 0.05f) bar((half * upper).coerceAtLeast(minHalf / 2), colors.mids, 0.65f)
+            val top = bands.third / total
+            if (top > 0.05f) bar((half * top).coerceAtLeast(minHalf / 2), colors.highs, 0.6f)
+        }
         x += step
     }
 }
