@@ -8,7 +8,7 @@ import com.google.gson.GsonBuilder
  * edit flips it to [CUSTOM]. [CUT] is kept so older saved mixes still read; it is no longer offered
  * as a style (the volume lane's Centre cut is the same shape).
  */
-enum class MixPreset { AUTO, CUSTOM, FADE, RISE, CUT, BLEND, WAVE, MELT, SLAM, DISSOLVE, SURGE, AFTERGLOW }
+enum class MixPreset { AUTO, CUSTOM, FADE, RISE, CUT, BLEND, WAVE, MELT, SLAM, DISSOLVE, SURGE, AFTERGLOW, NO_TRANSITION }
 
 /**
  * A named shape for the volume lane alone (Spotify's Volume presets). Picking one sets both

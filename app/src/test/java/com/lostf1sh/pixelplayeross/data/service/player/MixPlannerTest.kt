@@ -27,7 +27,7 @@ class MixPlannerTest {
     }
 
     @Test
-    fun `fade never has both songs loud at once`() {
+    fun `fade crossfades without both songs at full volume`() {
         val l = MixPresets.lines(MixPreset.FADE)
         for (i in 0..20) {
             val p = i / 20f

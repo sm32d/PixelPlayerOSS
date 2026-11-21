@@ -95,7 +95,7 @@ class MixProfileTest {
         assertEquals(194_000L, plan.mix.outPointMs)
         assertEquals(MixPreset.AUTO, plan.mix.preset)
         // The incoming song builds in while the outgoing one is left to fade by itself.
-        assertEquals(MixPresets.lines(MixPreset.RISE).incoming, plan.mix.inVolume)
+        assertEquals(MixPlanner.NATURAL_OUTRO_LINES.incoming, plan.mix.inVolume)
     }
 
     @Test
@@ -113,7 +113,7 @@ class MixProfileTest {
 
         assertEquals(MixPlanner.AutoReason.BOTH_PUNCHY, plan.reason)
         assertEquals(4_000L, plan.mix.windowMs)
-        assertEquals(MixPresets.lines(MixPreset.FADE).outgoing, plan.mix.outVolume)
+        assertEquals(MixPlanner.PUNCHY_LINES.outgoing, plan.mix.outVolume)
     }
 
     @Test

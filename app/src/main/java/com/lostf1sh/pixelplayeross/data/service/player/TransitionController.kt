@@ -7,6 +7,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import com.lostf1sh.pixelplayeross.data.media.TrackBpmRepository
+import com.lostf1sh.pixelplayeross.data.model.MixPreset
 import com.lostf1sh.pixelplayeross.data.model.MixTransition
 import com.lostf1sh.pixelplayeross.data.model.TransitionMode
 import com.lostf1sh.pixelplayeross.data.model.TransitionResolution
@@ -484,6 +485,16 @@ class TransitionController @Inject constructor(
             }
             if (!currentCoroutineContext().isActive) return@collectLatest
 
+            // "No transition": the songs play one after the other, as without a mix.
+            if (stored?.preset == MixPreset.NO_TRANSITION) {
+                Timber.tag("TransitionDebug").d("Mix: no transition for this pair.")
+                mixPlaybackState.remove(currentMediaItem.mediaId)
+                engine.cancelNext()
+                engine.setPauseAtEndOfMediaItems(shouldPause = false)
+                startIncomingMixLookahead(nextMediaItem, playlistId)
+                return@collectLatest
+            }
+
             // Fitted inside both songs: the incoming one must last the whole window from where it
             // starts, or its player would run on into the song after it while the lines still play.
             val mix = MixPlanner.fit(
@@ -623,6 +634,11 @@ class TransitionController @Inject constructor(
             transitionRepository.getMixTransition(playlistId, incoming.mediaId, followingItem.mediaId).first()
         } else {
             null
+        }
+        // No transition: the song plays to its end, so its seek bar is its full length.
+        if (stored?.preset == MixPreset.NO_TRANSITION) {
+            mixPlaybackState.remove(incoming.mediaId)
+            return true
         }
         val mix = MixPlanner.fit(
             stored ?: autoMixFor(incoming, followingItem, incomingDuration),

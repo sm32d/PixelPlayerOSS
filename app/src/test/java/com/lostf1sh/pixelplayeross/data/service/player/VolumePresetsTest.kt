@@ -41,20 +41,54 @@ class VolumePresetsTest {
     @Test
     fun `smooth crossfade is gentler than a straight fade at the start`() {
         // An S-curve barely moves early on; a straight line has already dropped by a quarter.
-        assertTrue(out(VolumePreset.SMOOTH_CROSSFADE, 0.25f) > out(VolumePreset.FADE_IN_FADE_OUT, 0.25f))
-        assertEquals(0.75f, out(VolumePreset.FADE_IN_FADE_OUT, 0.25f), 1e-6f)
+        assertTrue(out(VolumePreset.SMOOTH_CROSSFADE, 0.25f) > 0.75f)
+        assertTrue(inc(VolumePreset.SMOOTH_CROSSFADE, 0.25f) < 0.25f)
     }
 
     @Test
-    fun `cut in starts the incoming song at once while the outgoing fades`() {
+    fun `fade in fade out brings the incoming song up first then takes the outgoing down`() {
+        assertEquals(1f, out(VolumePreset.FADE_IN_FADE_OUT, 0.5f), 1e-6f)
+        assertEquals(1f, inc(VolumePreset.FADE_IN_FADE_OUT, 0.5f), 1e-6f)
+        assertEquals(0.5f, inc(VolumePreset.FADE_IN_FADE_OUT, 0.25f), 1e-6f)
+        assertEquals(0.5f, out(VolumePreset.FADE_IN_FADE_OUT, 0.75f), 1e-6f)
+    }
+
+    @Test
+    fun `cut in starts the incoming song at once while the outgoing fades over the second half`() {
         assertEquals(1f, inc(VolumePreset.CUT_IN_FADE_OUT, 0.1f), 1e-6f)
-        assertEquals(0.5f, out(VolumePreset.CUT_IN_FADE_OUT, 0.5f), 1e-6f)
+        assertEquals(1f, out(VolumePreset.CUT_IN_FADE_OUT, 0.5f), 1e-6f)
+        assertEquals(0.5f, out(VolumePreset.CUT_IN_FADE_OUT, 0.75f), 1e-6f)
     }
 
     @Test
-    fun `cut out keeps the outgoing song up while the incoming fades in`() {
+    fun `cut out keeps the outgoing song up while the incoming fades in over the first half`() {
         assertEquals(1f, out(VolumePreset.FADE_IN_CUT_OUT, 0.9f), 1e-6f)
-        assertEquals(0.5f, inc(VolumePreset.FADE_IN_CUT_OUT, 0.5f), 1e-6f)
+        assertEquals(0.5f, inc(VolumePreset.FADE_IN_CUT_OUT, 0.25f), 1e-6f)
+        assertEquals(1f, inc(VolumePreset.FADE_IN_CUT_OUT, 0.5f), 1e-6f)
+    }
+
+    @Test
+    fun `every style uses the volume preset of its recipe`() {
+        val expected = mapOf(
+            MixPreset.FADE to VolumePreset.SMOOTH_CROSSFADE,
+            MixPreset.RISE to VolumePreset.OVERLAP,
+            MixPreset.BLEND to VolumePreset.OVERLAP,
+            MixPreset.WAVE to VolumePreset.OVERLAP,
+            MixPreset.MELT to VolumePreset.FADE_IN_FADE_OUT,
+            MixPreset.SLAM to VolumePreset.CENTRE_CUT,
+            MixPreset.DISSOLVE to VolumePreset.FADE_IN_CUT_OUT,
+            MixPreset.SURGE to VolumePreset.FADE_IN_CUT_OUT,
+            MixPreset.AFTERGLOW to VolumePreset.SMOOTH_CROSSFADE,
+        )
+        expected.forEach { (style, volume) ->
+            val mix = MixPresets.apply(MixTransition(outPointMs = 0, windowMs = 8_000), style)
+            assertEquals(style, mix.preset)
+            assertEquals(volume, mix.volumePreset, "$style volume preset")
+            assertEquals(VolumePresets.lines(volume).outgoing, mix.outVolume, "$style outgoing line")
+            assertEquals(VolumePresets.lines(volume).incoming, mix.inVolume, "$style incoming line")
+        }
+        // Every style shown in the strip, other than Auto, Custom and No transition, has a recipe.
+        assertEquals(expected.keys, MixStyles.recipes.keys)
     }
 
     @Test
@@ -73,10 +107,11 @@ class VolumePresetsTest {
     }
 
     @Test
-    fun `editing a line by hand or picking a style clears the lane preset`() {
-        val named = VolumePresets.apply(MixTransition(outPointMs = 0, windowMs = 8_000), VolumePreset.OVERLAP)
+    fun `editing a line by hand clears the lane preset and picking a style sets its own`() {
+        val named = VolumePresets.apply(MixTransition(outPointMs = 0, windowMs = 8_000), VolumePreset.CENTRE_CUT)
         assertNull(MixEditing.custom(named).volumePreset)
-        assertNull(MixPresets.apply(named, MixPreset.RISE).volumePreset)
+        assertEquals(VolumePreset.OVERLAP, MixPresets.apply(named, MixPreset.RISE).volumePreset)
+        assertNull(MixPresets.apply(named, MixPreset.NO_TRANSITION).volumePreset)
     }
 
     @Test

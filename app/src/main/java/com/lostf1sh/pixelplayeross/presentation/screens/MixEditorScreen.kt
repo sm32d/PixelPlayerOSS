@@ -384,6 +384,7 @@ private fun presetLabel(preset: MixPreset): String = stringResource(
         MixPreset.DISSOLVE -> R.string.dj_mix_preset_dissolve
         MixPreset.SURGE -> R.string.dj_mix_preset_surge
         MixPreset.AFTERGLOW -> R.string.dj_mix_preset_afterglow
+        MixPreset.NO_TRANSITION -> R.string.dj_mix_preset_no_transition
     }
 )
 
@@ -403,6 +404,7 @@ private fun volumePresetLabel(preset: VolumePreset): String = stringResource(
 private val STYLE_PRESETS = listOf(
     MixPreset.AUTO, MixPreset.CUSTOM, MixPreset.FADE, MixPreset.RISE, MixPreset.BLEND, MixPreset.WAVE,
     MixPreset.MELT, MixPreset.SLAM, MixPreset.DISSOLVE, MixPreset.SURGE, MixPreset.AFTERGLOW,
+    MixPreset.NO_TRANSITION,
 )
 
 /** Horizontally scrolling row of style presets (too many to fit a connected button group). */

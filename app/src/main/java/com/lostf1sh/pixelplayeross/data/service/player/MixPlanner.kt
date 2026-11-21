@@ -3,101 +3,31 @@ package com.lostf1sh.pixelplayeross.data.service.player
 import com.lostf1sh.pixelplayeross.data.model.MixPreset
 import com.lostf1sh.pixelplayeross.data.model.MixTransition
 import com.lostf1sh.pixelplayeross.data.model.VolumeKeyframe
-import kotlin.math.PI
-import kotlin.math.cos
+import com.lostf1sh.pixelplayeross.data.model.VolumePreset
 import kotlin.math.roundToLong
 
-/** Volume-line shapes for each [MixPreset]. */
+/** Volume-line shapes for each style ([MixPreset]); each style uses its recipe's volume preset. */
 object MixPresets {
 
     /** Outgoing and incoming volume lines of a preset. */
     data class Lines(val outgoing: List<VolumeKeyframe>, val incoming: List<VolumeKeyframe>)
 
-    /** [MixPreset.CUSTOM] has no shape of its own; it reads as AUTO until the user edits it. */
+    /** [MixPreset.CUSTOM] has no shape of its own; it reads as Smooth crossfade until edited. */
     fun lines(preset: MixPreset): Lines = when (preset) {
-        MixPreset.AUTO, MixPreset.CUSTOM -> smoothCrossfade()
-        // Outgoing song fades out in the first half, the incoming one fades in during the second.
-        MixPreset.FADE -> Lines(
-            outgoing = listOf(VolumeKeyframe(0f, 1f), VolumeKeyframe(0.5f, 0f), VolumeKeyframe(1f, 0f)),
-            incoming = listOf(VolumeKeyframe(0f, 0f), VolumeKeyframe(0.5f, 0f), VolumeKeyframe(1f, 1f)),
-        )
-        // Outgoing stays up and drops late while the incoming song builds slowly, then swells.
-        MixPreset.RISE -> Lines(
-            outgoing = listOf(VolumeKeyframe(0f, 1f), VolumeKeyframe(0.7f, 1f), VolumeKeyframe(1f, 0f)),
-            incoming = listOf(VolumeKeyframe(0f, 0f), VolumeKeyframe(0.6f, 0.25f), VolumeKeyframe(1f, 1f)),
-        )
-        // Hard swap in the middle of the window.
-        MixPreset.CUT -> Lines(
-            outgoing = listOf(
-                VolumeKeyframe(0f, 1f), VolumeKeyframe(0.5f, 1f),
-                VolumeKeyframe(0.5f, 0f), VolumeKeyframe(1f, 0f),
-            ),
-            incoming = listOf(
-                VolumeKeyframe(0f, 0f), VolumeKeyframe(0.5f, 0f),
-                VolumeKeyframe(0.5f, 1f), VolumeKeyframe(1f, 1f),
-            ),
-        )
-
-        // The styles below carry Spotify's names. Their recipes are our reading of the names
-        // (Spotify doesn't publish them), and for now only the volume lane is shaped; EQ,
-        // filter and effects will be added to each style as those lanes exist.
-
-        // Equal-power (sine/cosine) crossfade: constant loudness through the whole window.
-        MixPreset.BLEND -> Lines(
-            outgoing = listOf(k(0f, 1f), k(0.25f, 0.924f), k(0.5f, 0.707f), k(0.75f, 0.383f), k(1f, 0f)),
-            incoming = listOf(k(0f, 0f), k(0.25f, 0.383f), k(0.5f, 0.707f), k(0.75f, 0.924f), k(1f, 1f)),
-        )
-        // The two songs swell and recede against each other before settling.
-        MixPreset.WAVE -> Lines(
-            outgoing = listOf(k(0f, 1f), k(0.3f, 0.6f), k(0.5f, 0.8f), k(0.75f, 0.3f), k(1f, 0f)),
-            incoming = listOf(k(0f, 0f), k(0.25f, 0.4f), k(0.5f, 0.25f), k(0.75f, 0.75f), k(1f, 1f)),
-        )
-        // The outgoing song softens early and slowly; the incoming one arrives late and gently.
-        MixPreset.MELT -> Lines(
-            outgoing = listOf(k(0f, 1f), k(0.4f, 0.45f), k(0.8f, 0.15f), k(1f, 0f)),
-            incoming = listOf(k(0f, 0f), k(0.5f, 0.1f), k(0.85f, 0.6f), k(1f, 1f)),
-        )
-        // Full volume until a hard switch near the end of the window.
-        MixPreset.SLAM -> Lines(
-            outgoing = listOf(k(0f, 1f), k(0.85f, 1f), k(0.85f, 0f), k(1f, 0f)),
-            incoming = listOf(k(0f, 0f), k(0.85f, 0f), k(0.85f, 1f), k(1f, 1f)),
-        )
-        // Both songs thin out together in the middle, then the incoming one comes back up.
-        MixPreset.DISSOLVE -> Lines(
-            outgoing = listOf(k(0f, 1f), k(0.5f, 0.3f), k(1f, 0f)),
-            incoming = listOf(k(0f, 0f), k(0.5f, 0.3f), k(1f, 1f)),
-        )
-        // The incoming song surges in early while the outgoing one fades under it.
-        MixPreset.SURGE -> Lines(
-            outgoing = listOf(k(0f, 1f), k(0.3f, 0.7f), k(1f, 0f)),
-            incoming = listOf(k(0f, 0f), k(0.2f, 0.8f), k(0.4f, 1f), k(1f, 1f)),
-        )
-        // The incoming song is up almost at once; the outgoing one lingers quietly underneath.
-        MixPreset.AFTERGLOW -> Lines(
-            outgoing = listOf(k(0f, 1f), k(0.2f, 0.5f), k(0.9f, 0.25f), k(1f, 0f)),
-            incoming = listOf(k(0f, 0f), k(0.15f, 0.9f), k(1f, 1f)),
-        )
+        MixPreset.CUSTOM -> VolumePresets.lines(VolumePreset.SMOOTH_CROSSFADE)
+        // Not played as a mix at all; the lines are only drawn.
+        MixPreset.NO_TRANSITION -> VolumePresets.lines(VolumePreset.CENTRE_CUT)
+        else -> VolumePresets.lines(MixStyles.volumeFor(preset) ?: VolumePreset.SMOOTH_CROSSFADE)
     }
 
-    private fun k(t: Float, v: Float) = VolumeKeyframe(t, v)
-
-    /** [mix] with the lines of [preset] applied. */
+    /** [mix] with the lines of [preset] applied; the volume lane is named after its recipe. */
     fun apply(mix: MixTransition, preset: MixPreset): MixTransition {
         val l = lines(preset)
-        // A top-level style sets its own lines, so the volume lane is no longer a named preset.
-        return mix.copy(outVolume = l.outgoing, inVolume = l.incoming, preset = preset, volumePreset = null)
-    }
-
-    private fun smoothCrossfade(): Lines {
-        // Few points keep the line easy to edit; interpolation between them is smooth enough.
-        val steps = 4
-        val s = (0..steps).map { i ->
-            val t = i.toFloat() / steps
-            t to ((1 - cos(PI * t)) / 2).toFloat()
-        }
-        return Lines(
-            outgoing = s.map { (t, v) -> VolumeKeyframe(t, 1f - v) },
-            incoming = s.map { (t, v) -> VolumeKeyframe(t, v) },
+        return mix.copy(
+            outVolume = l.outgoing,
+            inVolume = l.incoming,
+            preset = preset,
+            volumePreset = MixStyles.volumeFor(preset),
         )
     }
 }
@@ -175,34 +105,40 @@ object MixPlanner {
 
         var bars: Int? = null
         val windowMs: Long
-        val shape: MixPreset
+        val lines: MixPresets.Lines
+        val volumePreset: VolumePreset?
         val reason: AutoReason
         when {
             tempoMatched -> {
                 val barMs = BEATS_PER_BAR * 60_000.0 / outgoingBpm!!
                 bars = if (compatibility == BpmCompatibility.ALIGNED) 16 else 8
                 windowMs = (bars * barMs).roundToLong().coerceAtMost(MAX_AUTO_WINDOW_MS)
-                shape = MixPreset.AUTO
+                lines = VolumePresets.lines(VolumePreset.SMOOTH_CROSSFADE)
+                volumePreset = VolumePreset.SMOOTH_CROSSFADE
                 reason = AutoReason.TEMPO_MATCHED
             }
             outgoing.outroMs >= NATURAL_OUTRO_MS -> {
                 windowMs = outgoing.outroMs.coerceIn(NATURAL_OUTRO_MS, MAX_OUTRO_WINDOW_MS)
-                shape = MixPreset.RISE
+                lines = NATURAL_OUTRO_LINES
+                volumePreset = null
                 reason = AutoReason.NATURAL_OUTRO
             }
             incoming.introMs >= SOFT_INTRO_MS -> {
                 windowMs = incoming.introMs.coerceIn(MIN_INTRO_WINDOW_MS, MAX_INTRO_WINDOW_MS)
-                shape = MixPreset.AUTO
+                lines = VolumePresets.lines(VolumePreset.SMOOTH_CROSSFADE)
+                volumePreset = VolumePreset.SMOOTH_CROSSFADE
                 reason = AutoReason.SOFT_INTRO
             }
             outgoing.outroMs < ABRUPT_END_MS && incoming.introMs < PUNCHY_INTRO_MS -> {
                 windowMs = PUNCHY_WINDOW_MS
-                shape = MixPreset.FADE
+                lines = PUNCHY_LINES
+                volumePreset = null
                 reason = AutoReason.BOTH_PUNCHY
             }
             else -> {
                 windowMs = FALLBACK_WINDOW_MS
-                shape = MixPreset.AUTO
+                lines = VolumePresets.lines(VolumePreset.SMOOTH_CROSSFADE)
+                volumePreset = VolumePreset.SMOOTH_CROSSFADE
                 reason = AutoReason.DEFAULT
             }
         }
@@ -216,8 +152,28 @@ object MixPlanner {
             bars = bars,
         )
         // Shown as "Auto" in the editor whatever shape was picked: the user didn't choose it.
-        return AutoPlan(MixPresets.apply(base, shape).copy(preset = MixPreset.AUTO), reason)
+        return AutoPlan(
+            base.copy(
+                outVolume = lines.outgoing,
+                inVolume = lines.incoming,
+                preset = MixPreset.AUTO,
+                volumePreset = volumePreset,
+            ),
+            reason,
+        )
     }
+
+    /** Natural outro: the outgoing song is left to fade by itself while the incoming one builds in. */
+    internal val NATURAL_OUTRO_LINES = MixPresets.Lines(
+        outgoing = listOf(VolumeKeyframe(0f, 1f), VolumeKeyframe(0.7f, 1f), VolumeKeyframe(1f, 0f)),
+        incoming = listOf(VolumeKeyframe(0f, 0f), VolumeKeyframe(0.6f, 0.25f), VolumeKeyframe(1f, 1f)),
+    )
+
+    /** Two hard-hitting ends: fade down, then up, so the two loud songs never play on top of each other. */
+    internal val PUNCHY_LINES = MixPresets.Lines(
+        outgoing = listOf(VolumeKeyframe(0f, 1f), VolumeKeyframe(0.5f, 0f), VolumeKeyframe(1f, 0f)),
+        incoming = listOf(VolumeKeyframe(0f, 0f), VolumeKeyframe(0.5f, 0f), VolumeKeyframe(1f, 1f)),
+    )
 
     private const val NATURAL_OUTRO_MS = 4_000L
     private const val MAX_OUTRO_WINDOW_MS = 12_000L

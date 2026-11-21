@@ -34,6 +34,7 @@
     <string name="dj_mix_preset_dissolve">Dissolve</string>
     <string name="dj_mix_preset_surge">Surge</string>
     <string name="dj_mix_preset_afterglow">Afterglow</string>
+    <string name="dj_mix_preset_no_transition">No transition</string>
     <string name="dj_mix_volume">Volume</string>
     <string name="dj_mix_lane_custom">Custom</string>
     <string name="dj_mix_volume_smooth_crossfade">Smooth crossfade</string>
