@@ -273,6 +273,9 @@ class DualPlayerEngine @Inject constructor(
     private val transitionRunTracker = TransitionRunTracker()
     private var transitionJob: Job? = null
     private var tempoEaseJob: Job? = null
+
+    /** Each player's mix EQ/filter processor (none in the unmodified-sink output modes). */
+    private val mixDspProcessors = java.util.WeakHashMap<Player, MixDspProcessor>()
     private var bufferingFallbackJob: Job? = null
     private var transitionRunning = false
     private var auxiliaryPlayerPresented = false
@@ -1046,6 +1049,8 @@ class DualPlayerEngine @Inject constructor(
         // Decoder selection happens on the playback thread. Keep it tied to this player's sink
         // even while a mode change is rebuilding the players.
         val outputMode = audioOutputMode
+        // Mix EQ/filter for this player; not in the unmodified sink, which takes no processors.
+        val mixDsp = if (outputMode.usesUnmodifiedMedia3AudioSink) null else MixDspProcessor()
         val mediaCodecSelector = MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
             val decoderInfos = MediaCodecSelector.DEFAULT.getDecoderInfos(
                 mimeType,
@@ -1073,16 +1078,19 @@ class DualPlayerEngine @Inject constructor(
                         )
                     ) { "Media3 did not create its default AudioSink" }
                 }
-                return DefaultAudioSink.Builder(context)
+                val dsp = requireNotNull(mixDsp)
+                val sink = DefaultAudioSink.Builder(context)
                     .setEnableFloatOutput(outputMode.usesFloatOutput)
                     .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
                     .setAudioProcessorChain(
                         DefaultAudioSink.DefaultAudioProcessorChain(
                             HiResSampleRateCapAudioProcessor(),
-                            SurroundDownmixProcessor()
+                            SurroundDownmixProcessor(),
+                            dsp,
                         )
                     )
                     .build()
+                return MixTimingAudioSink(sink, dsp)
             }
 
             override fun buildVideoRenderers(
@@ -1210,6 +1218,7 @@ class DualPlayerEngine @Inject constructor(
             // keep the user's chosen output.
             setPreferredAudioDevice(preferredAudioDevice)
             playWhenReady = false
+            mixDsp?.let { mixDspProcessors[this] = it }
         }
     }
 
@@ -1402,8 +1411,69 @@ class DualPlayerEngine @Inject constructor(
         }
     }
 
-    suspend fun prepareNext(target: TransitionTarget, startPositionMs: Long = 0L) {
+    /**
+     * Prepares [target] for a transition. With [mixDsp] (a mix with EQ or Filter lanes) the
+     * incoming song gets its lanes, and it is played without audio offload, which would bypass
+     * them. A mix playlist passes [preferPcm] for every pair, so once the first mix has played
+     * every song of the playlist runs on the PCM path and has its lanes.
+     */
+    suspend fun prepareNext(
+        target: TransitionTarget,
+        startPositionMs: Long = 0L,
+        mixDsp: MixDspAutomation? = null,
+        preferPcm: Boolean = false,
+    ) {
+        val auxiliaryPlayer = getOrCreateAuxiliaryPlayer()
+        setOffloadAllowed(auxiliaryPlayer, allowed = !preferPcm && mixDsp == null)
+        mixDspProcessors[auxiliaryPlayer]?.let { it.automation = mixDsp?.takeUnless { a -> a.isNeutral } }
         prepareNext(target.mediaItem, target.absoluteIndex, startPositionMs)
+    }
+
+    /** The mix EQ/filter for the song playing now, as the outgoing song of its next mix (null: none). */
+    fun setOutgoingMixDsp(automation: MixDspAutomation?) {
+        val player = playerA
+        val processor = mixDspProcessors[player] ?: return
+        val auto = automation?.takeUnless { it.isNeutral }
+        if (auto != null) {
+            val stream = processor.streamTimeUs
+            Timber.tag("TransitionDebug").d(
+                "Mix DSP outgoing: processing at %d ms, heard at %d ms",
+                if (stream == C.TIME_UNSET) -1L else stream / 1_000, player.currentPosition,
+            )
+        }
+        val had = processor.automation
+        processor.automation = auto
+        if (auto != null || had != null) {
+            Timber.tag("TransitionDebug").d("Mix DSP outgoing: %s", auto ?: "off")
+        }
+    }
+
+    /** Replaces the prepared song's lanes (its speed changed, so its window is longer or shorter). */
+    fun setIncomingMixDsp(automation: MixDspAutomation?) {
+        val player = playerB ?: return
+        mixDspProcessors[player]?.automation = automation?.takeUnless { it.isNeutral }
+    }
+
+    private fun clearMixDsp() {
+        mixDspProcessors.values.forEach { it.automation = null }
+    }
+
+    private fun setOffloadAllowed(player: ExoPlayer, allowed: Boolean) {
+        val mode = if (allowed && audioOffloadEnabledForCurrentMode) {
+            TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_ENABLED
+        } else {
+            TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_DISABLED
+        }
+        val current = player.trackSelectionParameters.audioOffloadPreferences
+        if (current.audioOffloadMode == mode) return
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setAudioOffloadPreferences(
+                TrackSelectionParameters.AudioOffloadPreferences.Builder()
+                    .setAudioOffloadMode(mode)
+                    .setIsGaplessSupportRequired(true)
+                    .build()
+            )
+            .build()
     }
 
     suspend fun prepareNext(mediaItem: MediaItem, startPositionMs: Long = 0L) {
@@ -1464,6 +1534,7 @@ class DualPlayerEngine @Inject constructor(
         val shouldPublishMasterPlayer = auxiliaryPlayerPresented
         invalidateActiveTransition()
         resetPreparedWindowState()
+        clearMixDsp()
         playerB?.takeIf { it.mediaItemCount > 0 }?.let { auxiliaryPlayer ->
             try {
                 auxiliaryPlayer.stop()
@@ -1608,6 +1679,7 @@ class DualPlayerEngine @Inject constructor(
                 incomingPlayer.playbackParameters.speed, incomingSpeed, baseSpeed,
                 outgoingPlayer.currentPosition, incomingPlayer.currentPosition, lock?.errorMs ?: 0.0,
             )
+            logMixDsp("window opens", outgoingPlayer, incomingPlayer)
         }
 
         val duration = settings.durationMs.toLong().coerceAtLeast(500L)
@@ -1646,6 +1718,7 @@ class DualPlayerEngine @Inject constructor(
                     outgoingPlayer.currentPosition, incomingPlayer.currentPosition,
                     incomingPlayer.playbackParameters.speed, lock?.errorMs ?: 0.0,
                 )
+                logMixDsp("t=${elapsed}ms", outgoingPlayer, incomingPlayer)
             }
 
             if (elapsed >= duration) break
@@ -1655,6 +1728,8 @@ class DualPlayerEngine @Inject constructor(
         incomingPlayer.volume = incomingTrackReplayGainVolume ?: 1f
         incomingTrackReplayGainVolume = null
         volumeBeforeTransition = null
+        // Both lanes end neutral, and the processors are already past the window: fade them out.
+        clearMixDsp()
 
         removeMasterPlayerListeners(outgoingPlayer)
 
@@ -1689,6 +1764,27 @@ class DualPlayerEngine @Inject constructor(
         playerB?.clearMediaItems()
 
         setPauseAtEndOfMediaItems(false)
+    }
+
+    /**
+     * Logs what each player's mix processor is doing: the lane values at the song time it is
+     * processing, and whether audio reaches it at all (offloaded playback never does).
+     */
+    private fun logMixDsp(label: String, outgoing: Player, incoming: Player) {
+        fun describe(player: Player): String {
+            val p = mixDspProcessors[player] ?: return "no processor"
+            val auto = p.automation ?: return "off"
+            val stream = p.streamTimeUs
+            val idleMs = SystemClock.elapsedRealtime() - p.lastInputAtMs
+            if (stream == C.TIME_UNSET || idleMs > 2_000L) return "no audio reaches it (offloaded?)"
+            val progress = auto.progressAt(stream)
+            return "stream=%dms (pos %d) progress=%.2f low=%.2f mid=%.2f high=%.2f filter=%.2f".format(
+                stream / 1_000, player.currentPosition, progress,
+                auto.lowAt(progress), auto.midAt(progress), auto.highAt(progress), auto.filterAt(progress),
+            )
+        }
+        if (mixDspProcessors[outgoing]?.automation == null && mixDspProcessors[incoming]?.automation == null) return
+        Timber.tag("TransitionDebug").d("Mix DSP %s: out [%s] in [%s]", label, describe(outgoing), describe(incoming))
     }
 
     /**

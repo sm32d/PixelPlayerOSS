@@ -75,6 +75,13 @@ data class MixTransition(
      * (Spotify's Beatmatching). Null (also older stored data) means on, the default; false is off.
      */
     val beatmatch: Boolean? = null,
+    /**
+     * The EQ lane's preset. Null (older stored data) means the one in the style's recipe (see
+     * MixStyles), or none for a style without one (Auto, Custom).
+     */
+    val eq: EqPreset? = null,
+    /** The Filter lane's preset; null as for [eq]. */
+    val filter: FilterPreset? = null,
 ) {
     val beatmatchOn: Boolean get() = beatmatch != false
 

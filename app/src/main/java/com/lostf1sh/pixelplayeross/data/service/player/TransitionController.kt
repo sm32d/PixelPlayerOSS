@@ -70,6 +70,9 @@ class TransitionController @Inject constructor(
         /** Less time than this before the window is too little to pull the incoming song into step. */
         const val BEATMATCH_MIN_PREROLL_MS = 400L
 
+        /** A mix that starts this much after its mix point (a seek into the window) is moved to start now. */
+        const val LATE_START_MS = 300L
+
         /** Tries to publish the incoming song's mix point while waiting for the mix to start. */
         const val MAX_INCOMING_MIX_ATTEMPTS = 8
         const val INCOMING_MIX_RETRY_MS = 1_000L
@@ -209,6 +212,8 @@ class TransitionController @Inject constructor(
         mixPlaybackState.retainOnly(currentMediaItem.mediaId)
         needsDurationReschedule = false
         engine.setPauseAtEndOfMediaItems(shouldPause = false)
+        // Lanes belong to one song's mix; the schedule below sets this song's own.
+        if (!engine.isTransitionRunning()) engine.setOutgoingMixDsp(null)
 
         if (engine.sleepTimerHold.value.suppressCrossfade) {
             Timber.tag("TransitionDebug").d("Sleep timer holds playback at track end. No transition.")
@@ -520,12 +525,21 @@ class TransitionController @Inject constructor(
             // Beatmatched, the incoming song starts silently a little early to be pulled into step.
             val sync = beatmatch?.let { Beatmatch.syncFor(it, mix.outPointMs) }
 
+            // EQ and Filter lanes, placed on each song's own timeline (the incoming window lasts
+            // longer or shorter in song time when beatmatching changes its speed).
+            engine.setOutgoingMixDsp(MixLanes.automationFor(mix, outgoing = true))
             // The incoming song is positioned where the (fitted) mix starts it before it is prepared.
-            engine.prepareNext(transitionTarget, startPositionMs = sync?.prerollStartMs ?: mix.inStartMs)
+            engine.prepareNext(
+                transitionTarget,
+                startPositionMs = sync?.prerollStartMs ?: mix.inStartMs,
+                mixDsp = MixLanes.automationFor(mix, outgoing = false, incomingSpeed = sync?.speed ?: 1.0),
+                preferPcm = true,
+            )
 
             Timber.tag("TransitionDebug").d(
-                "Mix scheduled: out=%d ms, in=%d ms, window=%d ms, preset=%s, authored=%s",
-                mix.outPointMs, mix.inStartMs, mix.windowMs, mix.preset, stored != null
+                "Mix scheduled: out=%d ms, in=%d ms, window=%d ms, preset=%s, eq=%s, filter=%s, authored=%s",
+                mix.outPointMs, mix.inStartMs, mix.windowMs, mix.preset,
+                MixLanes.eqOf(mix), MixLanes.filterOf(mix), stored != null
             )
 
             mixPlaybackState.set(
@@ -577,6 +591,19 @@ class TransitionController @Inject constructor(
             // Too late to pull the incoming song into step before the window (a seek right up to
             // the mix point): it then plays as drawn, at its own tempo.
             val inStep = sync?.takeIf { player.currentPosition < mix.outPointMs - BEATMATCH_MIN_PREROLL_MS }
+            // Started late (or shortened): the lanes follow the window that really plays, as the
+            // volume lines do.
+            val startedLate = sync == null && player.currentPosition > mix.outPointMs + LATE_START_MS
+            if (startedLate || window != mix.windowMs || (sync != null && inStep == null)) {
+                val played = mix.copy(
+                    outPointMs = if (startedLate) player.currentPosition else mix.outPointMs,
+                    windowMs = window,
+                )
+                engine.setOutgoingMixDsp(MixLanes.automationFor(played, outgoing = true))
+                engine.setIncomingMixDsp(
+                    MixLanes.automationFor(played, outgoing = false, incomingSpeed = inStep?.speed ?: 1.0)
+                )
+            }
             engine.performTransition(settings.copy(durationMs = window.toInt()), mix, sync = inStep)
         }
     }

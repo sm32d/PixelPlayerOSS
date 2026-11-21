@@ -7,7 +7,11 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import com.lostf1sh.pixelplayeross.data.model.MixTransition
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -26,6 +30,7 @@ import timber.log.Timber
  *
  * Main-thread only. Call [stop] (or [release]) when done; it frees both players.
  */
+@androidx.annotation.OptIn(UnstableApi::class)
 class MixPreviewPlayer(
     private val context: Context,
     private val scope: CoroutineScope,
@@ -67,14 +72,19 @@ class MixPreviewPlayer(
         stop()
         val leadIn = minOf(LEAD_IN_MS, mix.outPointMs).coerceAtLeast(0L)
 
-        val out = buildPlayer(handleAudioFocus = true).apply {
+        // EQ and Filter lanes, on each song's own timeline as in playback.
+        val outDsp = MixDspProcessor().apply { automation = MixLanes.automationFor(mix, outgoing = true) }
+        val inDsp = MixDspProcessor().apply {
+            automation = MixLanes.automationFor(mix, outgoing = false, incomingSpeed = incomingSpeed)
+        }
+        val out = buildPlayer(handleAudioFocus = true, dsp = outDsp).apply {
             setMediaItem(MediaItem.fromUri(outgoingUri))
             seekTo((mix.outPointMs - leadIn).coerceAtLeast(0L))
             volume = 1f
             prepare()
             playWhenReady = true
         }
-        val inc = buildPlayer(handleAudioFocus = false).apply {
+        val inc = buildPlayer(handleAudioFocus = false, dsp = inDsp).apply {
             setMediaItem(MediaItem.fromUri(incomingUri))
             seekTo(sync?.prerollStartMs ?: mix.inStartMs.coerceAtLeast(0L))
             volume = 0f
@@ -171,8 +181,23 @@ class MixPreviewPlayer(
         incoming = null
     }
 
-    private fun buildPlayer(handleAudioFocus: Boolean): ExoPlayer =
-        ExoPlayer.Builder(context).build().apply {
+    /** A scratch player whose sink carries [dsp], the same EQ/filter processor playback uses. */
+    private fun buildPlayer(handleAudioFocus: Boolean, dsp: MixDspProcessor): ExoPlayer {
+        val renderers = object : DefaultRenderersFactory(context) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioOutputPlaybackParams: Boolean,
+            ): AudioSink = MixTimingAudioSink(
+                DefaultAudioSink.Builder(context)
+                    .setEnableFloatOutput(enableFloatOutput)
+                    .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
+                    .setAudioProcessorChain(DefaultAudioSink.DefaultAudioProcessorChain(dsp))
+                    .build(),
+                dsp,
+            )
+        }
+        return ExoPlayer.Builder(context, renderers).build().apply {
             setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -181,6 +206,7 @@ class MixPreviewPlayer(
                 handleAudioFocus,
             )
         }
+    }
 
     private companion object {
         const val LEAD_IN_MS = 4_000L

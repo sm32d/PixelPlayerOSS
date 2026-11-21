@@ -55,7 +55,8 @@ object VolumePresets {
      */
     fun apply(mix: MixTransition, preset: VolumePreset): MixTransition {
         val l = lines(preset)
-        return mix.copy(
+        // The other lanes keep what the style gave them.
+        return MixLanes.pinned(mix).copy(
             outVolume = l.outgoing,
             inVolume = l.incoming,
             preset = MixPreset.CUSTOM,

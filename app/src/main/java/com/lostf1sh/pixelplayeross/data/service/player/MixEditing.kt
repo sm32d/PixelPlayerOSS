@@ -110,6 +110,7 @@ object MixEditing {
 
     /** Marks [mix] as hand-edited. */
     fun custom(mix: MixTransition): MixTransition =
-        // A line drawn by hand is no longer the named volume preset either.
-        mix.copy(preset = MixPreset.CUSTOM, volumePreset = null)
+        // A line drawn by hand is no longer the named volume preset either. The EQ and Filter
+        // lanes keep what the style gave them.
+        MixLanes.pinned(mix).copy(preset = MixPreset.CUSTOM, volumePreset = null)
 }

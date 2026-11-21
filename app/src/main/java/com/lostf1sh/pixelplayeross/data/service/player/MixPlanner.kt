@@ -20,10 +20,13 @@ object MixPresets {
         else -> VolumePresets.lines(MixStyles.volumeFor(preset) ?: VolumePreset.SMOOTH_CROSSFADE)
     }
 
-    /** [mix] with the lines of [preset] applied; the volume lane is named after its recipe. */
+    /**
+     * [mix] with the lines of [preset] applied; the volume lane is named after its recipe and the
+     * EQ and Filter lanes take the recipe's presets.
+     */
     fun apply(mix: MixTransition, preset: MixPreset): MixTransition {
         val l = lines(preset)
-        return mix.copy(
+        return MixLanes.forStyle(mix, preset).copy(
             outVolume = l.outgoing,
             inVolume = l.incoming,
             preset = preset,

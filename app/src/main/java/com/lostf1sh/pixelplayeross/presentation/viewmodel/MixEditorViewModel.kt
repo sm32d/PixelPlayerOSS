@@ -11,6 +11,8 @@ import timber.log.Timber
 import com.lostf1sh.pixelplayeross.data.media.TagBpmReader
 import com.lostf1sh.pixelplayeross.data.media.WaveformData
 import com.lostf1sh.pixelplayeross.data.media.WaveformRepository
+import com.lostf1sh.pixelplayeross.data.model.EqPreset
+import com.lostf1sh.pixelplayeross.data.model.FilterPreset
 import com.lostf1sh.pixelplayeross.data.model.MixPreset
 import com.lostf1sh.pixelplayeross.data.model.MixTransition
 import com.lostf1sh.pixelplayeross.data.model.Song
@@ -21,6 +23,7 @@ import com.lostf1sh.pixelplayeross.data.repository.MusicRepository
 import com.lostf1sh.pixelplayeross.data.repository.TransitionRepository
 import com.lostf1sh.pixelplayeross.data.service.player.DualPlayerEngine
 import com.lostf1sh.pixelplayeross.data.service.player.MixEditing
+import com.lostf1sh.pixelplayeross.data.service.player.MixLanes
 import com.lostf1sh.pixelplayeross.data.service.player.MixPlanner
 import com.lostf1sh.pixelplayeross.data.service.player.MixPresets
 import com.lostf1sh.pixelplayeross.data.service.player.MixPreviewPlayer
@@ -232,11 +235,21 @@ class MixEditorViewModel @Inject constructor(
     // --- Edits -----------------------------------------------------------------------------
 
     fun applyPreset(preset: MixPreset) = editMix(markCustom = false) { mix ->
-        if (preset == MixPreset.CUSTOM) mix.copy(preset = MixPreset.CUSTOM) else MixPresets.apply(mix, preset)
+        if (preset == MixPreset.CUSTOM) MixLanes.pinned(mix).copy(preset = MixPreset.CUSTOM) else MixPresets.apply(mix, preset)
     }
 
     /** Sets the volume lane to a named shape (Smooth crossfade, Overlap, ...). */
     fun applyVolumePreset(preset: VolumePreset) = editMix(markCustom = false) { VolumePresets.apply(it, preset) }
+
+    /** Sets the EQ lane; like any lane choice, the mix is then Custom. */
+    fun applyEqPreset(preset: EqPreset) = editMix(markCustom = false) {
+        MixLanes.pinned(it).copy(eq = preset, preset = MixPreset.CUSTOM)
+    }
+
+    /** Sets the Filter lane; the mix is then Custom. */
+    fun applyFilterPreset(preset: FilterPreset) = editMix(markCustom = false) {
+        MixLanes.pinned(it).copy(filter = preset, preset = MixPreset.CUSTOM)
+    }
 
     fun selectWindow(option: MixPlanner.WindowOption) {
         val from = _uiState.value.from ?: return
