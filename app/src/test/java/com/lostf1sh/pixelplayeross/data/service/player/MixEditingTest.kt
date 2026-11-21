@@ -83,11 +83,11 @@ class MixEditingTest {
     @Test
     fun `window options follow the tempo and the song length`() {
         // 120 BPM: a bar is 2 s.
-        assertEquals(listOf(8_000L, 16_000L, 32_000L, 64_000L), MixPlanner.windowOptions(120f, 300_000).map { it.windowMs })
-        assertEquals(listOf(4, 8, 16, 32), MixPlanner.windowOptions(120f, 300_000).map { it.bars })
+        assertEquals(listOf(4_000L, 8_000L, 16_000L, 32_000L, 64_000L), MixPlanner.windowOptions(120f, 300_000).map { it.windowMs })
+        assertEquals(listOf(2, 4, 8, 16, 32), MixPlanner.windowOptions(120f, 300_000).map { it.bars })
         // Without a tempo: seconds, and options longer than the song drop out.
         val noBpm = MixPlanner.windowOptions(null, 10_000)
-        assertEquals(listOf(4_000L, 8_000L), noBpm.map { it.windowMs })
+        assertEquals(listOf(2_000L, 4_000L, 8_000L), noBpm.map { it.windowMs })
         assertTrue(noBpm.all { it.bars == null })
     }
 

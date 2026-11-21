@@ -27,6 +27,20 @@
     <string name="dj_mix_preset_fade">Fade</string>
     <string name="dj_mix_preset_rise">Rise</string>
     <string name="dj_mix_preset_cut">Cut</string>
+    <string name="dj_mix_preset_blend">Blend</string>
+    <string name="dj_mix_preset_wave">Wave</string>
+    <string name="dj_mix_preset_melt">Melt</string>
+    <string name="dj_mix_preset_slam">Slam</string>
+    <string name="dj_mix_preset_dissolve">Dissolve</string>
+    <string name="dj_mix_preset_surge">Surge</string>
+    <string name="dj_mix_preset_afterglow">Afterglow</string>
     <string name="dj_mix_volume">Volume</string>
+    <string name="dj_mix_lane_custom">Custom</string>
+    <string name="dj_mix_volume_smooth_crossfade">Smooth crossfade</string>
+    <string name="dj_mix_volume_overlap">Overlap</string>
+    <string name="dj_mix_volume_fade_in_fade_out">Fade in fade out</string>
+    <string name="dj_mix_volume_cut_in_fade_out">Cut in fade out</string>
+    <string name="dj_mix_volume_fade_in_cut_out">Fade in cut out</string>
+    <string name="dj_mix_volume_centre_cut">Centre cut</string>
     <string name="dj_mix_volume_hint">Drag the lines to shape each song. Long-press to add or remove a point. Drag a lane to slide the song.</string>
 </resources>

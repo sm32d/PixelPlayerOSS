@@ -3,8 +3,36 @@ package com.lostf1sh.pixelplayeross.data.model
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 
-/** Preset a [MixTransition] was built from. Any manual keyframe edit flips it to [CUSTOM]. */
-enum class MixPreset { AUTO, CUSTOM, FADE, RISE, CUT }
+/**
+ * Top-level style a [MixTransition] was built from (Spotify's transition presets). Any manual
+ * edit flips it to [CUSTOM]. [CUT] is kept so older saved mixes still read; it is no longer offered
+ * as a style (the volume lane's Centre cut is the same shape).
+ */
+enum class MixPreset { AUTO, CUSTOM, FADE, RISE, CUT, BLEND, WAVE, MELT, SLAM, DISSOLVE, SURGE, AFTERGLOW }
+
+/**
+ * A named shape for the volume lane alone (Spotify's Volume presets). Picking one sets both
+ * volume lines; any manual edit of a line clears it (the lane then reads "Custom").
+ */
+enum class VolumePreset {
+    /** Equal-power S-curves: one song eases out as the other eases in. */
+    SMOOTH_CROSSFADE,
+
+    /** Both songs at full volume for the whole window; the outgoing one stops at its end. */
+    OVERLAP,
+
+    /** Straight-line fade out and fade in across the whole window. */
+    FADE_IN_FADE_OUT,
+
+    /** The incoming song starts at full volume while the outgoing one fades out. */
+    CUT_IN_FADE_OUT,
+
+    /** The incoming song fades in while the outgoing one stays up and stops at the end. */
+    FADE_IN_CUT_OUT,
+
+    /** A hard swap in the middle of the window. */
+    CENTRE_CUT,
+}
 
 /**
  * One point on a volume line. [t] is the position inside the mix window (0 = window start,
@@ -30,6 +58,11 @@ data class MixTransition(
     val outVolume: List<VolumeKeyframe> = DEFAULT_OUT_VOLUME,
     val inVolume: List<VolumeKeyframe> = DEFAULT_IN_VOLUME,
     val preset: MixPreset = MixPreset.AUTO,
+    /**
+     * The volume lane's named preset, or null when the lines aren't one (picked by Auto, a
+     * top-level style, or edited by hand). Missing or unknown in stored data reads as null.
+     */
+    val volumePreset: VolumePreset? = null,
     /**
      * True when the pair's row also holds a genuine, separately chosen crossfade setting (it had
      * one before the mix was authored). That setting is used again whenever the playlist is not a

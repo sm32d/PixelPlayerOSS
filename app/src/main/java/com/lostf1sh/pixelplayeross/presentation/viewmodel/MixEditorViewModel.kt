@@ -13,6 +13,7 @@ import com.lostf1sh.pixelplayeross.data.model.MixTransition
 import com.lostf1sh.pixelplayeross.data.model.Song
 import com.lostf1sh.pixelplayeross.data.model.TransitionRule
 import com.lostf1sh.pixelplayeross.data.model.TransitionSettings
+import com.lostf1sh.pixelplayeross.data.model.VolumePreset
 import com.lostf1sh.pixelplayeross.data.repository.MusicRepository
 import com.lostf1sh.pixelplayeross.data.repository.TransitionRepository
 import com.lostf1sh.pixelplayeross.data.service.player.DualPlayerEngine
@@ -22,6 +23,7 @@ import com.lostf1sh.pixelplayeross.data.service.player.MixPresets
 import com.lostf1sh.pixelplayeross.data.service.player.MixPreviewPlayer
 import com.lostf1sh.pixelplayeross.data.service.player.MixProfile
 import com.lostf1sh.pixelplayeross.data.service.player.TransitionAnalyzer
+import com.lostf1sh.pixelplayeross.data.service.player.VolumePresets
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -182,6 +184,9 @@ class MixEditorViewModel @Inject constructor(
     fun applyPreset(preset: MixPreset) = editMix(markCustom = false) { mix ->
         if (preset == MixPreset.CUSTOM) mix.copy(preset = MixPreset.CUSTOM) else MixPresets.apply(mix, preset)
     }
+
+    /** Sets the volume lane to a named shape (Smooth crossfade, Overlap, ...). */
+    fun applyVolumePreset(preset: VolumePreset) = editMix(markCustom = false) { VolumePresets.apply(it, preset) }
 
     fun selectWindow(option: MixPlanner.WindowOption) {
         val from = _uiState.value.from ?: return

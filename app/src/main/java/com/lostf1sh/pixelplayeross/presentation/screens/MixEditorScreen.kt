@@ -1,11 +1,23 @@
 package com.lostf1sh.pixelplayeross.presentation.screens
 
 import androidx.compose.foundation.Canvas
+import com.lostf1sh.pixelplayeross.presentation.components.rememberModalSheetState
+import com.lostf1sh.pixelplayeross.data.model.VolumePreset
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material3.ToggleButtonDefaults
+import androidx.compose.material3.ToggleButton
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -90,7 +102,6 @@ import com.lostf1sh.pixelplayeross.data.model.Song
 import com.lostf1sh.pixelplayeross.data.model.VolumeKeyframe
 import com.lostf1sh.pixelplayeross.data.service.player.MixEditing
 import com.lostf1sh.pixelplayeross.data.service.player.MixPlanner
-import com.lostf1sh.pixelplayeross.presentation.components.ConnectedToggleButtonRow
 import com.lostf1sh.pixelplayeross.presentation.components.SmartImage
 import com.lostf1sh.pixelplayeross.presentation.viewmodel.MixEditorUiState
 import com.lostf1sh.pixelplayeross.presentation.viewmodel.MixEditorViewModel
@@ -321,28 +332,37 @@ private fun MixEditorContent(
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(start = 4.dp, top = 8.dp),
         )
-        val presets = remember { MixPreset.entries }
-        val presetLabelTexts = presets.map { presetLabel(it) }
-        val presetLabels = remember(presetLabelTexts) { presetLabelTexts.toImmutableList() }
-        ConnectedToggleButtonRow(
-            labels = presetLabels,
-            selectedIndex = presets.indexOf(mix.preset),
-            onSelect = { viewModel.applyPreset(presets[it]) },
-            modifier = Modifier.fillMaxWidth(),
-            // Five options share one row: no check mark, tighter padding, so labels fit whole.
-            showCheck = false,
-            contentPadding = PaddingValues(horizontal = 4.dp),
-        )
+        PresetStrip(selected = mix.preset, onSelect = viewModel::applyPreset)
 
-        Column(
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            Text(stringResource(R.string.dj_mix_volume), style = MaterialTheme.typography.titleMedium)
-            Text(
-                stringResource(R.string.dj_mix_volume_hint),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        // One row per lane, as in Spotify: the lane's current preset, tap for the list.
+        var showVolumeSheet by rememberSaveable { mutableStateOf(false) }
+        Column(Modifier.padding(top = 8.dp)) {
+            MixLaneRow(
+                label = stringResource(R.string.dj_mix_volume),
+                accent = outgoingColor,
+                // The lane's own preset; otherwise the style that drew the lines (e.g. "Auto");
+                // "Custom" only once the lines were edited by hand.
+                value = mix.volumePreset?.let { volumePresetLabel(it) }
+                    ?: if (mix.preset != MixPreset.CUSTOM) presetLabel(mix.preset)
+                    else stringResource(R.string.dj_mix_lane_custom),
+                onClick = { showVolumeSheet = true },
+            )
+        }
+        Text(
+            stringResource(R.string.dj_mix_volume_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 4.dp),
+        )
+        if (showVolumeSheet) {
+            VolumePresetSheet(
+                selected = mix.volumePreset,
+                accent = outgoingColor,
+                onSelect = {
+                    viewModel.applyVolumePreset(it)
+                    showVolumeSheet = false
+                },
+                onDismiss = { showVolumeSheet = false },
             )
         }
         Spacer(Modifier.height(bottomOverlay))
@@ -357,8 +377,128 @@ private fun presetLabel(preset: MixPreset): String = stringResource(
         MixPreset.FADE -> R.string.dj_mix_preset_fade
         MixPreset.RISE -> R.string.dj_mix_preset_rise
         MixPreset.CUT -> R.string.dj_mix_preset_cut
+        MixPreset.BLEND -> R.string.dj_mix_preset_blend
+        MixPreset.WAVE -> R.string.dj_mix_preset_wave
+        MixPreset.MELT -> R.string.dj_mix_preset_melt
+        MixPreset.SLAM -> R.string.dj_mix_preset_slam
+        MixPreset.DISSOLVE -> R.string.dj_mix_preset_dissolve
+        MixPreset.SURGE -> R.string.dj_mix_preset_surge
+        MixPreset.AFTERGLOW -> R.string.dj_mix_preset_afterglow
     }
 )
+
+@Composable
+private fun volumePresetLabel(preset: VolumePreset): String = stringResource(
+    when (preset) {
+        VolumePreset.SMOOTH_CROSSFADE -> R.string.dj_mix_volume_smooth_crossfade
+        VolumePreset.OVERLAP -> R.string.dj_mix_volume_overlap
+        VolumePreset.FADE_IN_FADE_OUT -> R.string.dj_mix_volume_fade_in_fade_out
+        VolumePreset.CUT_IN_FADE_OUT -> R.string.dj_mix_volume_cut_in_fade_out
+        VolumePreset.FADE_IN_CUT_OUT -> R.string.dj_mix_volume_fade_in_cut_out
+        VolumePreset.CENTRE_CUT -> R.string.dj_mix_volume_centre_cut
+    }
+)
+
+/** The styles offered in the strip, in Spotify's order. [MixPreset.CUT] is kept only for old data. */
+private val STYLE_PRESETS = listOf(
+    MixPreset.AUTO, MixPreset.CUSTOM, MixPreset.FADE, MixPreset.RISE, MixPreset.BLEND, MixPreset.WAVE,
+    MixPreset.MELT, MixPreset.SLAM, MixPreset.DISSOLVE, MixPreset.SURGE, MixPreset.AFTERGLOW,
+)
+
+/** Horizontally scrolling row of style presets (too many to fit a connected button group). */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun PresetStrip(selected: MixPreset, onSelect: (MixPreset) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        STYLE_PRESETS.forEach { preset ->
+            ToggleButton(
+                checked = preset == selected,
+                onCheckedChange = { onSelect(preset) },
+                modifier = Modifier.height(56.dp).widthIn(min = 104.dp),
+                colors = ToggleButtonDefaults.colors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    checkedContainerColor = MaterialTheme.colorScheme.primary,
+                    checkedContentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+            ) {
+                if (preset == MixPreset.AUTO) {
+                    Icon(Icons.Rounded.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(presetLabel(preset), style = MaterialTheme.typography.labelLarge, maxLines = 1)
+            }
+        }
+    }
+}
+
+/** A lane (Volume, and later EQ, Filter, ...): its colour, name and current preset. */
+@Composable
+private fun MixLaneRow(label: String, accent: Color, value: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.width(4.dp).height(24.dp).clip(CircleShape).background(accent))
+        Spacer(Modifier.width(12.dp))
+        Text(label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        Text(value, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Icon(
+            Icons.Rounded.ExpandMore,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp),
+        )
+    }
+}
+
+/** The Volume lane's presets; the current one is ticked. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VolumePresetSheet(
+    selected: VolumePreset?,
+    accent: Color,
+    onSelect: (VolumePreset) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalSheetState(skipPartiallyExpanded = true),
+    ) {
+        Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.width(4.dp).height(24.dp).clip(CircleShape).background(accent))
+                Spacer(Modifier.width(12.dp))
+                Text(stringResource(R.string.dj_mix_volume), style = MaterialTheme.typography.titleLarge)
+            }
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            VolumePreset.entries.forEach { preset ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onSelect(preset) }
+                        .padding(horizontal = 8.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(volumePresetLabel(preset), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                    if (preset == selected) {
+                        Icon(Icons.Rounded.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun SongHeader(song: Song, bpm: Float?, accent: Color) {

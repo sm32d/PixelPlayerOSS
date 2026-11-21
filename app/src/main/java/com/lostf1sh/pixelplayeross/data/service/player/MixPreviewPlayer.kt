@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import timber.log.Timber
 
 /**
  * Auditions a [MixTransition] in the editor on two scratch players, so the user's queue and the
@@ -40,20 +41,36 @@ class MixPreviewPlayer(
 
     val isPlaying: Boolean get() = job?.isActive == true
 
+    /**
+     * Starts the preview. A player that can't be set up (bad position, unreadable file, platform
+     * refusal) ends the preview and is logged; it must never take the app down with it.
+     */
     fun start(outgoingUri: Uri, incomingUri: Uri, mix: MixTransition) {
+        try {
+            startPlayers(outgoingUri, incomingUri, mix)
+        } catch (e: IllegalArgumentException) {
+            Timber.tag("MixPreview").w(e, "Preview could not start (out=%d in=%d)", mix.outPointMs, mix.inStartMs)
+            stop()
+        } catch (e: IllegalStateException) {
+            Timber.tag("MixPreview").w(e, "Preview could not start (out=%d in=%d)", mix.outPointMs, mix.inStartMs)
+            stop()
+        }
+    }
+
+    private fun startPlayers(outgoingUri: Uri, incomingUri: Uri, mix: MixTransition) {
         stop()
-        val leadIn = minOf(LEAD_IN_MS, mix.outPointMs)
+        val leadIn = minOf(LEAD_IN_MS, mix.outPointMs).coerceAtLeast(0L)
 
         val out = buildPlayer(handleAudioFocus = true).apply {
             setMediaItem(MediaItem.fromUri(outgoingUri))
-            seekTo(mix.outPointMs - leadIn)
+            seekTo((mix.outPointMs - leadIn).coerceAtLeast(0L))
             volume = 1f
             prepare()
             playWhenReady = true
         }
         val inc = buildPlayer(handleAudioFocus = false).apply {
             setMediaItem(MediaItem.fromUri(incomingUri))
-            seekTo(mix.inStartMs)
+            seekTo(mix.inStartMs.coerceAtLeast(0L))
             volume = 0f
             prepare() // stays paused until the window opens
         }

@@ -87,5 +87,6 @@ object MixEditing {
 
     /** Marks [mix] as hand-edited. */
     fun custom(mix: MixTransition): MixTransition =
-        if (mix.preset == MixPreset.CUSTOM) mix else mix.copy(preset = MixPreset.CUSTOM)
+        // A line drawn by hand is no longer the named volume preset either.
+        mix.copy(preset = MixPreset.CUSTOM, volumePreset = null)
 }
