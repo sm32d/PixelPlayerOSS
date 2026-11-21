@@ -84,6 +84,11 @@ data class MixTransition(
     val filter: FilterPreset? = null,
     /** The Effects lane's preset (reverb or echo on the outgoing song); null as for [eq]. */
     val effects: EffectPreset? = null,
+    /**
+     * The Looping lane: how many beats of the outgoing song repeat through the window (1, 2, 4, 8
+     * or 16), or null/0 for none. Missing from older stored data, which reads as none.
+     */
+    val loopBeats: Int? = null,
 ) {
     val beatmatchOn: Boolean get() = beatmatch != false
 

@@ -1,5 +1,6 @@
 package com.lostf1sh.pixelplayeross.data.service.player
 
+import com.lostf1sh.pixelplayeross.data.media.BeatGrid
 import com.lostf1sh.pixelplayeross.data.model.EffectPreset
 import com.lostf1sh.pixelplayeross.data.model.EqPreset
 import com.lostf1sh.pixelplayeross.data.model.FilterPreset
@@ -67,6 +68,39 @@ class MixLanesTest {
         assertEquals(250.0, MixLanes.automationFor(m, outgoing = true)!!.echoDelayMs, 1e-9)
         // Nothing for the incoming song.
         assertNull(MixLanes.automationFor(m, outgoing = false))
+    }
+
+    @Test
+    fun `a loop starts on the first beat of the window`() {
+        val grid = BeatGrid(bpm = 120f, downbeatMs = 100.0, confidence = 1f)
+        val m = MixTransition(outPointMs = 10_030, windowMs = 16_000, loopBeats = 4)
+        val loop = MixLanes.loopPlacement(m, grid)!!
+        assertEquals(10_100.0, loop.startMs, 1e-9)
+        assertEquals(2_000.0, loop.lengthMs, 1e-9)
+        // A start a hair after a beat counts as on it.
+        assertEquals(10_100.0, MixLanes.loopPlacement(m.copy(outPointMs = 10_110), grid)!!.startMs, 1e-9)
+        // With only a tempo tag, from the window start.
+        val tagged = MixLanes.loopPlacement(m, grid = null, beatMs = 500.0)!!
+        assertEquals(10_030.0, tagged.startMs, 1e-9)
+        // No tempo, or no loop: none.
+        assertNull(MixLanes.loopPlacement(m, grid = null))
+        assertNull(MixLanes.loopPlacement(m.copy(loopBeats = 0), grid))
+    }
+
+    @Test
+    fun `loops are stored, cleared by styles and checked`() {
+        val m = mix.copy(loopBeats = 8)
+        assertEquals(8, MixLanes.loopOf(MixTransition.fromJson(MixTransition.toJson(m))!!))
+        assertEquals(0, MixLanes.loopOf(MixPresets.apply(m, MixPreset.FADE)))
+        assertEquals(8, MixLanes.loopOf(MixEditing.custom(m)))
+        assertEquals(0, MixLanes.loopOf(m.copy(loopBeats = 3)))
+        // A loop alone is enough to need the processor, on the outgoing song only.
+        val loopOnly = m.copy(eq = EqPreset.NONE, filter = FilterPreset.NONE, effects = EffectPreset.NONE)
+        assertTrue(MixLanes.usesDsp(loopOnly))
+        val auto = MixLanes.automationFor(loopOnly, outgoing = true, beatMs = 500.0)!!
+        assertEquals(180_000_000L, auto.loopStartUs)
+        assertEquals(4_000_000L, auto.loopLengthUs)
+        assertNull(MixLanes.automationFor(loopOnly, outgoing = false, beatMs = 500.0))
     }
 
     @Test

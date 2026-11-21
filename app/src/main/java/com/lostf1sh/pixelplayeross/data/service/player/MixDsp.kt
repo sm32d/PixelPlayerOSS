@@ -28,7 +28,14 @@ class MixDspAutomation(
     val dry: List<VolumeKeyframe> = listOf(VolumeKeyframe(0f, 1f), VolumeKeyframe(1f, 1f)),
     /** Time between echo repeats. */
     val echoDelayMs: Double = 250.0,
+    /**
+     * A loop: from song time [loopStartUs] the next [loopLengthUs] play once and then repeat, in
+     * place of the rest of the song, until the automation is cleared. 0 length = no loop.
+     */
+    val loopStartUs: Long = 0L,
+    val loopLengthUs: Long = 0L,
 ) {
+    val hasLoop: Boolean get() = loopLengthUs > 0L
     /** Window progress (0..1) at song time [timeUs]. */
     fun progressAt(timeUs: Long): Float {
         val span = (endUs - startUs).coerceAtLeast(1L)
@@ -44,7 +51,7 @@ class MixDspAutomation(
 
     /** True when nothing on any line changes the sound. */
     val isNeutral: Boolean
-        get() = listOf(low, mid, high).all { line -> line.all { it.v >= 1f } } &&
+        get() = !hasLoop && listOf(low, mid, high).all { line -> line.all { it.v >= 1f } } &&
             filter.all { it.v == MixLanes.FILTER_NEUTRAL } &&
             (effect == EffectKind.NONE || (send.all { it.v <= 0f } && dry.all { it.v >= 1f }))
 
@@ -62,6 +69,9 @@ class MixDspAutomation(
  * or high-pass from 20 Hz up to [HP_MAX_HZ], with a little resonance as on a DJ mixer.
  *
  * Effects: a reverb or a feedback echo, fed by the send line, added to the song at its dry level.
+ *
+ * Looping: a whole number of the song's beats repeats in place of the song (see [Looper]); the
+ * other lanes then shape the loop.
  *
  * Parameters are read once per [BLOCK] frames and gains glide across each block, so automation
  * never steps. Turning the processing on or off (an automation set or cleared) crossfades between
@@ -96,6 +106,7 @@ class MixDspCore(private val sampleRate: Int, private val channels: Int) {
     // Effects, made when first needed (most mixes have none).
     private var reverb: Array<Reverb>? = null
     private var echo: Array<Echo>? = null
+    private var looper: Looper? = null
 
     /** True when nothing is being processed and nothing is fading out: the input can be left as is. */
     fun isIdle(automation: MixDspAutomation?): Boolean = automation == null && wet == 0f
@@ -118,6 +129,17 @@ class MixDspCore(private val sampleRate: Int, private val channels: Int) {
                 lines.forEach { it.delaySamples = delay }
             }
         } else null
+        // The loop replaces the song's samples first; the other lanes then shape the loop.
+        val loop = automation?.takeIf { it.hasLoop }?.let { a ->
+            val startFrame = a.loopStartUs * sampleRate / 1_000_000L
+            val lengthFrames = (a.loopLengthUs * sampleRate / 1_000_000L).toInt()
+            looper?.takeIf { it.startFrame == startFrame && it.lengthFrames == lengthFrames }
+                ?: Looper(channels, startFrame, lengthFrames, (LOOP_SEAM_MS * sampleRate / 1000).toInt()).also { looper = it }
+        }
+        if (loop != null) {
+            val firstFrame = startUs * sampleRate / 1_000_000L
+            loop.process(buf, frames, firstFrame)
+        }
         var frame = 0
         while (frame < frames) {
             val n = minOf(BLOCK, frames - frame)
@@ -234,6 +256,71 @@ class MixDspCore(private val sampleRate: Int, private val channels: Int) {
         // Tails don't carry over into a new stream; the buffers are made again when needed.
         reverb = null
         echo = null
+        looper = null
+    }
+
+    /**
+     * Records [lengthFrames] frames from song frame [startFrame] as they play, then plays them
+     * again and again in place of the song. A short [seam] of the song just before the loop is
+     * kept too: the end of each pass crossfades into it, so every repeat flows into the loop's
+     * start as the song itself did, without a click.
+     *
+     * Song frames come from the processor's song time; a buffer within a couple of frames of
+     * where the last one ended is taken as continuing it (rounding), anything else as a jump.
+     */
+    private class Looper(
+        private val channels: Int,
+        val startFrame: Long,
+        val lengthFrames: Int,
+        seam: Int,
+    ) {
+        private val seam = seam.coerceAtMost(lengthFrames / 2).coerceAtLeast(1)
+        private val total = this.seam + lengthFrames
+        private val buf = FloatArray(total * channels)
+
+        /** Highest frame (relative to the seam's start) recorded without a gap; -1 for none. */
+        private var recorded = -1
+        private var nextFrame = Long.MIN_VALUE
+
+        fun process(io: FloatArray, frames: Int, firstFrame: Long) {
+            val first = if (nextFrame != Long.MIN_VALUE && abs(firstFrame - nextFrame) <= 2) nextFrame else firstFrame
+            nextFrame = first + frames
+            val origin = startFrame - seam
+            val fadeFrom = lengthFrames - seam
+            for (i in 0 until frames) {
+                val rel = first + i - origin
+                val base = i * channels
+                if (rel < 0) {
+                    // Before the loop (a jump back): record it afresh when it comes round again.
+                    recorded = -1
+                    continue
+                }
+                if (rel < total) {
+                    // First pass: the song plays as itself and is recorded.
+                    val r = rel.toInt()
+                    if (r <= recorded + 1) {
+                        System.arraycopy(io, base, buf, r * channels, channels)
+                        if (r > recorded) recorded = r
+                    }
+                    val q = r - seam
+                    // Into the first repeat: only when everything up to here was recorded unbroken.
+                    if (q >= fadeFrom && recorded >= r) blendSeam(io, base, q - fadeFrom)
+                    continue
+                }
+                // Repeats, once the whole loop is recorded (a jump into its middle leaves the song as is).
+                if (recorded < total - 1) continue
+                val q = ((rel - seam) % lengthFrames).toInt()
+                System.arraycopy(buf, (seam + q) * channels, io, base, channels)
+                if (q >= fadeFrom) blendSeam(io, base, q - fadeFrom)
+            }
+        }
+
+        /** Crossfades frame [base] of [io] towards the seam (the song just before the loop). */
+        private fun blendSeam(io: FloatArray, base: Int, k: Int) {
+            val a = (k + 1).toFloat() / seam
+            val from = k * channels
+            for (c in 0 until channels) io[base + c] = io[base + c] * (1 - a) + buf[from + c] * a
+        }
     }
 
     /**
@@ -371,6 +458,7 @@ class MixDspCore(private val sampleRate: Int, private val channels: Int) {
         const val FADE_MS = 30f
         private const val STEREO_SPREAD = 23
         private const val LIMIT_KNEE = 0.8
+        const val LOOP_SEAM_MS = 10
         private const val NEUTRAL_BAND = 0.002f
         private const val BYPASS = 0
         private const val LOW_PASS = 1

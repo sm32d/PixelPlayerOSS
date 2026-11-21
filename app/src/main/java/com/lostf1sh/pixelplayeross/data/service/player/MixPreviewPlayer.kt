@@ -12,6 +12,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
+import com.lostf1sh.pixelplayeross.data.media.BeatGrid
 import com.lostf1sh.pixelplayeross.data.model.MixTransition
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -55,11 +56,12 @@ class MixPreviewPlayer(
         incomingUri: Uri,
         mix: MixTransition,
         sync: Beatmatch.Sync? = null,
-        /** The outgoing song's beat length, for the echo (see [MixLanes.automationFor]). */
+        /** The outgoing song's tempo-tag beat length and beat grid, for the echo and loop (see [MixLanes.automationFor]). */
         beatMs: Double? = null,
+        grid: BeatGrid? = null,
     ) {
         try {
-            startPlayers(outgoingUri, incomingUri, mix, sync, beatMs)
+            startPlayers(outgoingUri, incomingUri, mix, sync, beatMs, grid)
         } catch (e: IllegalArgumentException) {
             Timber.tag("MixPreview").w(e, "Preview could not start (out=%d in=%d)", mix.outPointMs, mix.inStartMs)
             stop()
@@ -80,13 +82,14 @@ class MixPreviewPlayer(
         mix: MixTransition,
         sync: Beatmatch.Sync?,
         beatMs: Double?,
+        grid: BeatGrid?,
     ) {
         val incomingSpeed = sync?.speed ?: 1.0
         stop()
         val leadIn = minOf(LEAD_IN_MS, mix.outPointMs).coerceAtLeast(0L)
 
         // EQ and Filter lanes, on each song's own timeline as in playback.
-        val outDsp = MixDspProcessor().apply { automation = MixLanes.automationFor(mix, outgoing = true, beatMs = beatMs) }
+        val outDsp = MixDspProcessor().apply { automation = MixLanes.automationFor(mix, outgoing = true, beatMs = beatMs, grid = grid) }
         val inDsp = MixDspProcessor().apply {
             automation = MixLanes.automationFor(mix, outgoing = false, incomingSpeed = incomingSpeed)
         }

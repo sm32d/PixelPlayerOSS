@@ -247,6 +247,11 @@ class MixEditorViewModel @Inject constructor(
         MixLanes.pinned(it).copy(eq = preset, preset = MixPreset.CUSTOM)
     }
 
+    /** Sets the Looping lane ([beats] of the outgoing song, 0 for none); the mix is then Custom. */
+    fun applyLoop(beats: Int) = editMix(markCustom = false) {
+        MixLanes.pinned(it).copy(loopBeats = beats, preset = MixPreset.CUSTOM)
+    }
+
     /** Sets the Effects lane; the mix is then Custom. */
     fun applyEffectPreset(preset: EffectPreset) = editMix(markCustom = false) {
         MixLanes.pinned(it).copy(effects = preset, preset = MixPreset.CUSTOM)
@@ -440,13 +445,13 @@ class MixEditorViewModel @Inject constructor(
         } else {
             null
         }
-        val beatMs = state.fromGrid?.beatMs ?: state.fromBpm?.takeIf { it > 0f }?.let { 60_000.0 / it }
         preview.start(
             Uri.fromFile(File(from.path)),
             Uri.fromFile(File(to.path)),
             mix.copy(inStartMs = sync?.inStartMs ?: mix.inStartMs),
             sync,
-            beatMs,
+            beatMs = state.fromBpm?.takeIf { it > 0f }?.let { 60_000.0 / it },
+            grid = state.fromGrid,
         )
     }
 

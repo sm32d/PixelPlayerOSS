@@ -82,6 +82,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -256,6 +257,7 @@ private fun MixEditorContent(
             eq = androidx.compose.ui.graphics.lerp(Color(0xFFE8B730), primary, 0.12f),
             filter = androidx.compose.ui.graphics.lerp(Color(0xFFE56F9B), primary, 0.12f),
             effects = onSurface,
+            loop = androidx.compose.ui.graphics.lerp(Color(0xFF8E7CF0), primary, 0.12f),
         )
     }
 
@@ -394,12 +396,12 @@ private fun MixEditorContent(
                 selected = focusedLane == MixLane.EFFECTS,
                 onClick = { focusedLane = MixLane.EFFECTS; openSheet = MixLane.EFFECTS },
             )
-            // The lane still to come: shown, but not playable yet.
-            val none = stringResource(R.string.dj_mix_lane_none)
-            ComingLaneRow(
+            MixLaneRow(
                 label = stringResource(R.string.dj_mix_lane_looping),
-                accent = MaterialTheme.colorScheme.outline,
-                value = none,
+                accent = laneColors.loop,
+                value = loopLabel(MixLanes.loopOf(mix)),
+                selected = focusedLane == MixLane.LOOPING,
+                onClick = { focusedLane = MixLane.LOOPING; openSheet = MixLane.LOOPING },
             )
             BeatmatchRow(state = state, mix = mix, onCheckedChange = viewModel::setBeatmatch)
         }
@@ -410,6 +412,7 @@ private fun MixEditorContent(
                     MixLane.EQ -> R.string.dj_mix_eq_hint
                     MixLane.FILTER -> R.string.dj_mix_filter_hint
                     MixLane.EFFECTS -> R.string.dj_mix_effects_hint
+                    MixLane.LOOPING -> R.string.dj_mix_loop_hint
                 }
             ),
             style = MaterialTheme.typography.bodySmall,
@@ -461,6 +464,18 @@ private fun MixEditorContent(
                 label = { effectPresetLabel(it) },
                 onSelect = {
                     viewModel.applyEffectPreset(it)
+                    openSheet = null
+                },
+                onDismiss = { openSheet = null },
+            )
+            MixLane.LOOPING -> LanePresetSheet(
+                title = stringResource(R.string.dj_mix_lane_looping),
+                accent = laneColors.loop,
+                options = MixLanes.LOOP_OPTIONS,
+                selected = MixLanes.loopOf(mix),
+                label = { loopLabel(it) },
+                onSelect = {
+                    viewModel.applyLoop(it)
                     openSheet = null
                 },
                 onDismiss = { openSheet = null },
@@ -542,9 +557,9 @@ private fun PresetStrip(selected: MixPreset, onSelect: (MixPreset) -> Unit) {
 }
 
 /** The lanes that can be shown on the timeline and set from a sheet. */
-private enum class MixLane { VOLUME, EQ, FILTER, EFFECTS }
+private enum class MixLane { VOLUME, EQ, FILTER, EFFECTS, LOOPING }
 
-private data class LaneColors(val eq: Color, val filter: Color, val effects: Color)
+private data class LaneColors(val eq: Color, val filter: Color, val effects: Color, val loop: Color)
 
 /** A lane (Volume, EQ, Filter): its colour, name and current preset; [selected] is the one on the timeline. */
 @Composable
@@ -611,39 +626,11 @@ private fun BeatmatchRow(state: MixEditorUiState, mix: MixTransition, onCheckedC
     }
 }
 
-/**
- * A lane that isn't played yet (EQ, Filter, Effects, Looping, Beatmatching): dimmed and not
- * tappable, labelled "Coming soon", showing what the selected style will set on it. With
- * [switchOn] non-null the row ends in a (disabled) switch instead of a value.
- */
+/** "None" or "4-beat loop". */
 @Composable
-private fun ComingLaneRow(label: String, accent: Color?, value: String?, switchOn: Boolean? = null) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .alpha(0.5f)
-            .padding(horizontal = 8.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (accent != null) {
-            Box(Modifier.width(4.dp).height(24.dp).clip(CircleShape).background(accent))
-            Spacer(Modifier.width(12.dp))
-        }
-        Column(Modifier.weight(1f)) {
-            Text(label, style = MaterialTheme.typography.titleMedium)
-            Text(
-                stringResource(R.string.dj_mix_lane_coming_soon),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (switchOn != null) {
-            Switch(checked = switchOn, onCheckedChange = null, enabled = false)
-        } else if (value != null) {
-            Text(value, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
+private fun loopLabel(beats: Int): String =
+    if (beats == 0) stringResource(R.string.dj_mix_lane_none)
+    else pluralStringResource(R.plurals.dj_mix_loop_beats, beats, beats)
 
 @Composable
 private fun eqPresetLabel(preset: EqPreset): String = stringResource(
@@ -1013,6 +1000,37 @@ private fun MixTimeline(
         fromGrid?.let { drawBeatGrid(g, it, mix.outPointMs, outgoing = true, color = barLineColor) }
         toGrid?.let { drawBeatGrid(g, it, mix.inStartMs, outgoing = false, color = barLineColor, speed = inSpeed) }
 
+        // The loop: the beats recorded (filled), then each repeat (outlined) until the window ends.
+        MixLanes.loopPlacement(mix, fromGrid, state.fromBpm?.takeIf { it > 0f }?.let { 60_000.0 / it })?.let { loop ->
+            val top = g.laneTop(outgoing = true) + 4.dp.toPx()
+            val height = g.laneHeight - 8.dp.toPx()
+            val corner = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx())
+            fun x(songMs: Double) = g.xOf((songMs - mix.outPointMs).toFloat())
+            val focused = focus == MixLane.LOOPING
+            drawRoundRect(
+                color = laneColors.loop.copy(alpha = if (focused) 0.3f else 0.18f),
+                topLeft = Offset(x(loop.startMs), top),
+                size = androidx.compose.ui.geometry.Size(x(loop.endMs) - x(loop.startMs), height),
+                cornerRadius = corner,
+            )
+            var repeatStart = loop.endMs
+            val windowEnd = (mix.outPointMs + mix.windowMs).toDouble()
+            while (repeatStart < windowEnd) {
+                val end = minOf(repeatStart + loop.lengthMs, windowEnd)
+                drawRoundRect(
+                    color = laneColors.loop.copy(alpha = if (focused) 0.8f else 0.45f),
+                    topLeft = Offset(x(repeatStart), top),
+                    size = androidx.compose.ui.geometry.Size(x(end) - x(repeatStart), height),
+                    cornerRadius = corner,
+                    style = Stroke(
+                        width = 2.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx())),
+                    ),
+                )
+                repeatStart += loop.lengthMs
+            }
+        }
+
         // Lane divider.
         drawLine(gridColor, Offset(0f, g.laneHeight), Offset(size.width, g.laneHeight), strokeWidth = 2f)
 
@@ -1046,7 +1064,8 @@ private fun MixTimeline(
                 drawLaneLine(g, lines.dry, outgoing, laneColors.effects.copy(alpha = 0.5f), dashed = true, skipFlat = true)
                 drawLaneLine(g, lines.send, outgoing, laneColors.effects, skipFlat = true)
             }
-            MixLane.VOLUME -> Unit
+            // The loop is drawn above, for every lane.
+            MixLane.VOLUME, MixLane.LOOPING -> Unit
         }
 
         // Playhead: the window start when idle, the audible position while previewing.

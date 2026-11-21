@@ -240,6 +240,54 @@ class MixDspTest {
         assertTrue(effect(EffectKind.REVERB, send = 0f, dry = 1f).isNeutral)
     }
 
+    private fun loop(startMs: Long, lengthMs: Long) = MixDspAutomation(
+        startUs = 0L, endUs = 10_000_000L,
+        low = flat(1f), mid = flat(1f), high = flat(1f), filter = flat(MixLanes.FILTER_NEUTRAL),
+        loopStartUs = startMs * 1_000, loopLengthUs = lengthMs * 1_000,
+    )
+
+    @Test
+    fun `a loop plays its beats again and again`() {
+        // Noise, so a repeat can only match by really being the same audio.
+        val random = java.util.Random(7)
+        val frames = rate * 3
+        val buf = FloatArray(frames * channels) { (random.nextGaussian() * 0.2).toFloat() }
+        // A 2-beat loop at 120 bpm (0.5 s) from 1 s.
+        run(buf, loop(startMs = 1_000, lengthMs = 500))
+        val start = rate
+        val length = rate / 2
+        val seam = MixDspCore.LOOP_SEAM_MS * rate / 1000
+        // Repeats 1 to 3, past the filters settling and before each seam, match the first pass.
+        for (repeat in 1..3) {
+            var maxDiff = 0f
+            for (k in rate / 10 until length - seam) {
+                val a = buf[(start + k) * channels]
+                val b = buf[(start + repeat * length + k) * channels]
+                maxDiff = maxOf(maxDiff, abs(a - b))
+            }
+            assertTrue(maxDiff < 0.01f, "repeat $repeat differs by $maxDiff")
+        }
+    }
+
+    @Test
+    fun `loop seams don't click`() {
+        // A sine whose period doesn't divide the loop: a hard splice would jump.
+        val buf = sine(440.0, 3.0)
+        run(buf, loop(startMs = 1_000, lengthMs = 467))
+        var maxStep = 0f
+        for (i in 1 until buf.size / channels) maxStep = maxOf(maxStep, abs(buf[i * channels] - buf[(i - 1) * channels]))
+        assertTrue(maxStep < 0.06f, "largest step between samples: $maxStep")
+    }
+
+    @Test
+    fun `before its start a loop changes nothing`() {
+        val input = sine(1_000.0, 1.0)
+        val buf = input.copyOf()
+        run(buf, loop(startMs = 2_000, lengthMs = 500))
+        // Only the EQ's all-pass touches it: the level is the input's.
+        assertEquals(0.0, db(rms(buf, rate / 2, rate) / rms(input, rate / 2, rate)), 0.1)
+    }
+
     @Test
     fun `clearing the lanes fades back to the dry sound and stops`() {
         val core = MixDspCore(rate, channels)

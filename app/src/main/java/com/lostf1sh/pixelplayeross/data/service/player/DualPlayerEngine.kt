@@ -1778,10 +1778,18 @@ class DualPlayerEngine @Inject constructor(
             val idleMs = SystemClock.elapsedRealtime() - p.lastInputAtMs
             if (stream == C.TIME_UNSET || idleMs > 2_000L) return "no audio reaches it (offloaded?)"
             val progress = auto.progressAt(stream)
-            return "stream=%dms (pos %d) progress=%.2f low=%.2f mid=%.2f high=%.2f filter=%.2f %s send=%.2f dry=%.2f".format(
+            val loop = if (!auto.hasLoop) "" else {
+                val into = stream - auto.loopStartUs
+                when {
+                    into < 0 -> " loop in %dms".format(-into / 1_000)
+                    into < auto.loopLengthUs -> " loop recording"
+                    else -> " loop repeat %d".format(into / auto.loopLengthUs)
+                }
+            }
+            return "stream=%dms (pos %d) progress=%.2f low=%.2f mid=%.2f high=%.2f filter=%.2f %s send=%.2f dry=%.2f%s".format(
                 stream / 1_000, player.currentPosition, progress,
                 auto.lowAt(progress), auto.midAt(progress), auto.highAt(progress), auto.filterAt(progress),
-                auto.effect, auto.sendAt(progress), auto.dryAt(progress),
+                auto.effect, auto.sendAt(progress), auto.dryAt(progress), loop,
             )
         }
         if (mixDspProcessors[outgoing]?.automation == null && mixDspProcessors[incoming]?.automation == null) return

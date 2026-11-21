@@ -1,11 +1,13 @@
 package com.lostf1sh.pixelplayeross.data.service.player
 
+import com.lostf1sh.pixelplayeross.data.media.BeatGrid
 import com.lostf1sh.pixelplayeross.data.model.EffectPreset
 import com.lostf1sh.pixelplayeross.data.model.EqPreset
 import com.lostf1sh.pixelplayeross.data.model.FilterPreset
 import com.lostf1sh.pixelplayeross.data.model.MixPreset
 import com.lostf1sh.pixelplayeross.data.model.MixTransition
 import com.lostf1sh.pixelplayeross.data.model.VolumeKeyframe
+import kotlin.math.ceil
 
 /** One song's EQ lines: gain (0 = band removed, 1 = untouched) of its bass, mids and highs. */
 data class EqLines(val low: List<VolumeKeyframe>, val mid: List<VolumeKeyframe>, val high: List<VolumeKeyframe>)
@@ -49,9 +51,41 @@ object MixLanes {
     fun effectsOf(mix: MixTransition): EffectPreset =
         mix.effects ?: MixStyles.recipes[mix.preset]?.effects ?: EffectPreset.NONE
 
+    /** The loop lengths offered, in beats (0 = no loop), as in Spotify's Looping lane. */
+    val LOOP_OPTIONS = listOf(0, 1, 2, 4, 8, 16)
+
+    /** Beats [mix] loops (0 for none; an unknown stored value reads as none). */
+    fun loopOf(mix: MixTransition): Int = mix.loopBeats?.takeIf { it in LOOP_OPTIONS } ?: 0
+
+    /** Where a loop sits in the outgoing song (song time, ms). */
+    data class LoopPlacement(val startMs: Double, val lengthMs: Double) {
+        val endMs: Double get() = startMs + lengthMs
+    }
+
+    /**
+     * The outgoing song's loop: [loopOf] beats from its first beat at the window start (from its
+     * beat grid; with only a tempo, from the window start itself). Null with no loop or no tempo:
+     * a loop that isn't a whole number of beats would stumble.
+     */
+    fun loopPlacement(mix: MixTransition, grid: BeatGrid?, beatMs: Double? = null): LoopPlacement? {
+        val beats = loopOf(mix)
+        if (beats == 0) return null
+        val reliable = grid?.takeIf { it.isReliable }
+        val beat = reliable?.beatMs ?: beatMs?.takeIf { it in 150.0..2_000.0 } ?: return null
+        val start = reliable?.let { g ->
+            // The first beat at (or a hair before) the window start.
+            val index = ceil((mix.outPointMs - BEAT_TOLERANCE_MS - g.downbeatMs) / g.beatMs).toLong()
+            g.beatTimeMs(index)
+        } ?: mix.outPointMs.toDouble()
+        return LoopPlacement(start, beats * beat)
+    }
+
+    private const val BEAT_TOLERANCE_MS = 20.0
+
     /** True when [mix] needs the mix processor (and so the PCM audio path). */
     fun usesDsp(mix: MixTransition): Boolean =
-        eqOf(mix) != EqPreset.NONE || filterOf(mix) != FilterPreset.NONE || effectsOf(mix) != EffectPreset.NONE
+        eqOf(mix) != EqPreset.NONE || filterOf(mix) != FilterPreset.NONE || effectsOf(mix) != EffectPreset.NONE ||
+            loopOf(mix) != 0
 
     /** [mix] with its lane presets written out, so a later change of style label can't change them. */
     fun pinned(mix: MixTransition): MixTransition =
@@ -60,10 +94,12 @@ object MixLanes {
     /** The lane presets a style sets: its recipe's, none for Auto and No transition, unchanged for Custom. */
     fun forStyle(mix: MixTransition, style: MixPreset): MixTransition = when (style) {
         MixPreset.CUSTOM -> pinned(mix)
+        // No style loops.
         else -> mix.copy(
             eq = MixStyles.recipes[style]?.eq ?: EqPreset.NONE,
             filter = MixStyles.recipes[style]?.filter ?: FilterPreset.NONE,
             effects = MixStyles.recipes[style]?.effects ?: EffectPreset.NONE,
+            loopBeats = 0,
         )
     }
 
@@ -165,13 +201,19 @@ object MixLanes {
         mix: MixTransition,
         outgoing: Boolean,
         incomingSpeed: Double = 1.0,
-        /** The outgoing song's beat length, which times the echo (half a beat); 120 bpm when unknown. */
+        /**
+         * The outgoing song's beat length (from its tempo tag), for the echo (half a beat; 120 bpm
+         * when unknown) and the loop. Its beat [grid], when known, is used first and places the loop.
+         */
         beatMs: Double? = null,
+        grid: BeatGrid? = null,
     ): MixDspAutomation? {
         val eq = eqOf(mix)
         val filter = filterOf(mix)
         val effects = effectsOf(mix)
-        if (eq == EqPreset.NONE && filter == FilterPreset.NONE && effects == EffectPreset.NONE) return null
+        val loop = if (outgoing) loopPlacement(mix, grid, beatMs) else null
+        if (eq == EqPreset.NONE && filter == FilterPreset.NONE && effects == EffectPreset.NONE && loop == null) return null
+        val beat = grid?.takeIf { it.isReliable }?.beatMs ?: beatMs
         val eqLines = eqLines(eq).let { if (outgoing) it.outgoing else it.incoming }
         val filterLine = filterLines(filter).let { if (outgoing) it.outgoing else it.incoming }
         val effectLines = effectLines(effects).let { if (outgoing) it.outgoing else it.incoming }
@@ -187,7 +229,9 @@ object MixLanes {
             effect = effectKind(effects),
             send = effectLines.send,
             dry = effectLines.dry,
-            echoDelayMs = (beatMs?.takeIf { it in 150.0..2_000.0 } ?: DEFAULT_BEAT_MS) * ECHO_BEATS,
+            echoDelayMs = (beat?.takeIf { it in 150.0..2_000.0 } ?: DEFAULT_BEAT_MS) * ECHO_BEATS,
+            loopStartUs = loop?.let { (it.startMs * 1_000).toLong() } ?: 0L,
+            loopLengthUs = loop?.let { (it.lengthMs * 1_000).toLong() } ?: 0L,
         ).takeUnless { it.isNeutral }
     }
 
