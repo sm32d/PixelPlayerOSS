@@ -45,9 +45,9 @@ class MixPreviewPlayer(
      * Starts the preview. A player that can't be set up (bad position, unreadable file, platform
      * refusal) ends the preview and is logged; it must never take the app down with it.
      */
-    fun start(outgoingUri: Uri, incomingUri: Uri, mix: MixTransition) {
+    fun start(outgoingUri: Uri, incomingUri: Uri, mix: MixTransition, sync: Beatmatch.Sync? = null) {
         try {
-            startPlayers(outgoingUri, incomingUri, mix)
+            startPlayers(outgoingUri, incomingUri, mix, sync)
         } catch (e: IllegalArgumentException) {
             Timber.tag("MixPreview").w(e, "Preview could not start (out=%d in=%d)", mix.outPointMs, mix.inStartMs)
             stop()
@@ -57,7 +57,13 @@ class MixPreviewPlayer(
         }
     }
 
-    private fun startPlayers(outgoingUri: Uri, incomingUri: Uri, mix: MixTransition) {
+    /**
+     * With [sync] (beatmatching, see [Beatmatch]) the incoming song starts silently a little before
+     * the window, is pulled into step ([BeatLock]), plays the window at the matched speed and eases
+     * back to its own tempo afterwards, as in playback.
+     */
+    private fun startPlayers(outgoingUri: Uri, incomingUri: Uri, mix: MixTransition, sync: Beatmatch.Sync?) {
+        val incomingSpeed = sync?.speed ?: 1.0
         stop()
         val leadIn = minOf(LEAD_IN_MS, mix.outPointMs).coerceAtLeast(0L)
 
@@ -70,8 +76,9 @@ class MixPreviewPlayer(
         }
         val inc = buildPlayer(handleAudioFocus = false).apply {
             setMediaItem(MediaItem.fromUri(incomingUri))
-            seekTo(mix.inStartMs.coerceAtLeast(0L))
+            seekTo(sync?.prerollStartMs ?: mix.inStartMs.coerceAtLeast(0L))
             volume = 0f
+            if (sync != null) setPlaybackSpeed(incomingSpeed.toFloat())
             prepare() // stays paused until the window opens
         }
         outgoing = out
@@ -88,24 +95,39 @@ class MixPreviewPlayer(
         out.addListener(errorListener)
         inc.addListener(errorListener)
 
+        val lock = sync?.let { BeatLock(it, out, inc, baseSpeed = 1f, logTag = "MixPreview") }
+        val incomingStartRel = -(sync?.prerollMs ?: 0L)
         job = scope.launch {
             var incomingStarted = false
+            var settled = false
             var outgoingStopped = false
+            var windowEndedAtPos = 0L
             while (isActive) {
                 val outPos = out.currentPosition
                 val rel = if (!outgoingStopped) {
                     outPos - mix.outPointMs
                 } else {
-                    inc.currentPosition - mix.inStartMs
+                    // Past the window: count on from its end in the incoming song's own time.
+                    mix.windowMs + (inc.currentPosition - windowEndedAtPos)
                 }
                 _positionMs.value = rel
 
-                if (rel >= 0 && !incomingStarted) {
+                if (rel >= incomingStartRel && !incomingStarted) {
                     inc.play()
                     incomingStarted = true
                 }
+                if (lock != null && incomingStarted && !outgoingStopped) {
+                    when {
+                        rel < 0 -> lock.step()
+                        !settled -> { lock.settle(); settled = true }
+                        else -> lock.measure()
+                    }
+                }
 
                 if (rel >= 0 && rel < mix.windowMs) {
+                    if (lock != null && rel % 1000 < FRAME_MS) {
+                        Timber.tag("MixPreview").d("Beatmatch error=%.0fms at %dms", lock.errorMs, rel)
+                    }
                     val progress = rel.toFloat() / mix.windowMs
                     out.volume = MixEnvelope.volumeAt(mix.outVolume, progress)
                     inc.volume = MixEnvelope.volumeAt(mix.inVolume, progress)
@@ -114,6 +136,12 @@ class MixPreviewPlayer(
                     out.pause()
                     inc.volume = MixEnvelope.volumeAt(mix.inVolume, 1f)
                     outgoingStopped = true
+                    windowEndedAtPos = inc.currentPosition
+                }
+                if (outgoingStopped && sync != null) {
+                    val sinceEnd = ((inc.currentPosition - windowEndedAtPos) / incomingSpeed).toLong()
+                    val target = Beatmatch.easeBackStep(incomingSpeed, sinceEnd).toFloat()
+                    if (kotlin.math.abs(inc.playbackParameters.speed - target) > 1e-4f) inc.setPlaybackSpeed(target)
                 }
 
                 val outgoingEnded = out.playbackState == Player.STATE_ENDED

@@ -6,6 +6,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lostf1sh.pixelplayeross.data.media.BeatGrid
+import com.lostf1sh.pixelplayeross.data.service.player.Beatmatch
 import timber.log.Timber
 import com.lostf1sh.pixelplayeross.data.media.TagBpmReader
 import com.lostf1sh.pixelplayeross.data.media.WaveformData
@@ -72,8 +73,26 @@ data class MixEditorUiState(
         get() = from?.let { MixPlanner.windowOptions(fromBpm, it.duration) }.orEmpty()
 
     /** The songs' beat grids, when the audio showed a clear one. */
-    val fromGrid: BeatGrid? get() = fromWaveform?.beatGrid?.takeIf { it.isReliable }
-    val toGrid: BeatGrid? get() = toWaveform?.beatGrid?.takeIf { it.isReliable }
+    // Only from whole-song waveforms: the first look (40 s of each song) can place the bar a beat
+    // differently, and the grid, the tempo and the incoming song's position would then jump
+    // again when the whole song is in.
+    val fromGrid: BeatGrid? get() = fromWaveform?.takeIf { !it.isPartial }?.beatGrid?.takeIf { it.isReliable }
+    val toGrid: BeatGrid? get() = toWaveform?.takeIf { !it.isPartial }?.beatGrid?.takeIf { it.isReliable }
+
+    /** Why the pair can't be beatmatched; null when it can. Meaningless while [gridsLoading]. */
+    val beatmatchUnavailable: Beatmatch.Unavailable? get() = Beatmatch.unavailableReason(fromGrid, toGrid)
+
+    /** The songs are still being listened to for their beat. */
+    val gridsLoading: Boolean get() = (fromGrid == null && fromWaveformLoading) || (toGrid == null && toWaveformLoading)
+
+    /** Incoming speed during the window when beatmatching is on and possible; null otherwise. */
+    val beatmatchSpeed: Double?
+        get() {
+            if (mix?.beatmatchOn != true) return null
+            val out = fromGrid ?: return null
+            val inc = toGrid ?: return null
+            return Beatmatch.speedFor(out, inc)?.first
+        }
 }
 
 @HiltViewModel
@@ -192,9 +211,14 @@ class MixEditorViewModel @Inject constructor(
      */
     private fun useDetectedTempo() {
         _uiState.update { s ->
+            // Now that the beats are known, show the incoming song where beatmatching will really
+            // start it. Not an edit: playback lines it up the same way, so nothing to save.
+            val aligned = s.mix?.let { aligned(it, s) }
+            if (aligned != null && s.mix == baseline) baseline = aligned
             s.copy(
                 fromBpm = s.fromBpm ?: s.fromGrid?.bpm,
                 toBpm = s.toBpm ?: s.toGrid?.bpm,
+                mix = aligned ?: s.mix,
             )
         }
         _uiState.value.let { s ->
@@ -229,19 +253,26 @@ class MixEditorViewModel @Inject constructor(
         val from = state.from ?: return
         editMix(markCustom = false) { mix ->
             val clamp = { ms: Long -> MixEditing.shiftOutPoint(mix, ms - mix.outPointMs, from.duration).outPointMs }
-            val slide = MixEditing.slide(mix.outPointMs, deltaMs, outSlide, state.fromGrid, clamp)
+            val slide = MixEditing.slide(mix.outPointMs, deltaMs, outSlide, { MixEditing.snapToBeat(it, state.fromGrid) }, clamp)
             outSlide = slide
             mix.copy(outPointMs = slide.shownMs)
         }
     }
 
-    /** Slides the incoming song under the window by [deltaMs]; where it starts snaps to its beats. */
+    /**
+     * Slides the incoming song under the window by [deltaMs]. Where it starts snaps to its beats,
+     * or, when beatmatching, from one lined-up bar to the next.
+     */
     fun shiftIncoming(deltaMs: Long) {
         val state = _uiState.value
         val to = state.to ?: return
         editMix(markCustom = false) { mix ->
             val clamp = { ms: Long -> MixEditing.shiftInStart(mix, ms - mix.inStartMs, to.duration).inStartMs }
-            val slide = MixEditing.slide(mix.inStartMs, deltaMs, inSlide, state.toGrid, clamp)
+            val snap = { ms: Long ->
+                (if (mix.beatmatchOn) Beatmatch.plan(mix, state.fromGrid, state.toGrid, to.duration, ms)?.inStartMs else null)
+                    ?: MixEditing.snapToBeat(ms, state.toGrid)
+            }
+            val slide = MixEditing.slide(mix.inStartMs, deltaMs, inSlide, snap, clamp)
             inSlide = slide
             mix.copy(inStartMs = slide.shownMs)
         }
@@ -310,12 +341,28 @@ class MixEditorViewModel @Inject constructor(
 
                 val smart = MixPlanner.fit(autoMix(from, fromBpm, toBpm), from.duration, to.duration)
                     ?: return@launch
-                baseline = smart
-                _uiState.update { it.copy(mix = smart) }
+                _uiState.update {
+                    val shown = aligned(smart, it)
+                    baseline = shown
+                    it.copy(mix = shown)
+                }
             } finally {
                 _uiState.update { it.copy(isAnalyzing = false) }
             }
         }
+    }
+
+    /** Turns beatmatching on or off for this pair. */
+    fun setBeatmatch(on: Boolean) = editMix(markCustom = false) { it.copy(beatmatch = on) }
+
+    /**
+     * [mix] with the incoming start moved to where beatmatching lines its bars up with the
+     * outgoing song (the nearest such point); unchanged when beatmatching is off or impossible.
+     */
+    private fun aligned(mix: MixTransition, state: MixEditorUiState): MixTransition {
+        if (!mix.beatmatchOn) return mix
+        val plan = Beatmatch.plan(mix, state.fromGrid, state.toGrid, state.to?.duration) ?: return mix
+        return mix.copy(inStartMs = plan.inStartMs)
     }
 
     private fun editMix(markCustom: Boolean = true, transform: (MixTransition) -> MixTransition) {
@@ -325,6 +372,7 @@ class MixEditorViewModel @Inject constructor(
         _uiState.update { state ->
             val current = state.mix ?: return@update state
             val edited = transform(current).let { if (markCustom) MixEditing.custom(it) else it }
+                .let { aligned(it, state) }
             state.copy(mix = edited, isDirty = edited != baseline, isSaved = false)
         }
     }
@@ -368,7 +416,12 @@ class MixEditorViewModel @Inject constructor(
         if (!state.canPreview || state.isAnalyzing) return
         // The main player would play over the preview.
         engine.masterPlayer.pause()
-        preview.start(Uri.fromFile(File(from.path)), Uri.fromFile(File(to.path)), mix)
+        val sync = if (mix.beatmatchOn) {
+            Beatmatch.plan(mix, state.fromGrid, state.toGrid, to.duration)?.let { Beatmatch.syncFor(it, mix.outPointMs) }
+        } else {
+            null
+        }
+        preview.start(Uri.fromFile(File(from.path)), Uri.fromFile(File(to.path)), mix.copy(inStartMs = sync?.inStartMs ?: mix.inStartMs), sync)
     }
 
     fun stopPreview() {

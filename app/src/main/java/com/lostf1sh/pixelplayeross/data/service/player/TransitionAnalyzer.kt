@@ -2,7 +2,10 @@ package com.lostf1sh.pixelplayeross.data.service.player
 
 import android.util.LruCache
 import androidx.media3.common.MediaItem
+import android.content.Context
+import com.lostf1sh.pixelplayeross.data.media.BeatGrid
 import com.lostf1sh.pixelplayeross.data.media.WaveformData
+import dagger.hilt.android.qualifiers.ApplicationContext
 import com.lostf1sh.pixelplayeross.data.media.WaveformDecoder
 import com.lostf1sh.pixelplayeross.data.media.WaveformRepository
 import com.lostf1sh.pixelplayeross.utils.MediaItemBuilder
@@ -34,7 +37,9 @@ class SongAnalysis(val profile: MixProfile, val head: WaveformData, val tail: Wa
  * the automatic mix then falls back to tempo tags alone.
  */
 @Singleton
-class TransitionAnalyzer @Inject constructor() {
+class TransitionAnalyzer @Inject constructor(
+    @ApplicationContext private val context: Context,
+) {
 
     private object Unavailable
 
@@ -70,6 +75,19 @@ class TransitionAnalyzer @Inject constructor() {
             cache.put(key, Unavailable)
         }
         return analysis
+    }
+
+    /**
+     * The beat grid of a local song for beatmatching: from its whole-song waveform when the editor
+     * has already decoded one (so playback lines up exactly as the editor showed), otherwise from
+     * the part analyzed for the automatic mix: its [end] (last 40 s) or its start. Null when the
+     * song has no clear steady beat or can't be read.
+     */
+    suspend fun beatGridFor(path: String, end: Boolean): BeatGrid? {
+        val whole = withContext(Dispatchers.IO) { WaveformRepository.readCached(context, path) }
+        whole?.beatGrid?.let { return it.takeIf { g -> g.isReliable } }
+        val analysis = analysisFor(path) ?: return null
+        return (if (end) analysis.tail else analysis.head).beatGrid?.takeIf { it.isReliable }
     }
 
     private fun analyze(path: String, isCancelled: () -> Boolean): SongAnalysis? {

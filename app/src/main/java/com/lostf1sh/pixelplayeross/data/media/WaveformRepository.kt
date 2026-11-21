@@ -32,7 +32,7 @@ class WaveformRepository @Inject constructor(
 ) {
     private object Unavailable
 
-    private val cacheDir by lazy { File(context.cacheDir, CACHE_DIR_NAME) }
+    private val cacheDir by lazy { cacheDirOf(context) }
 
     // Values are WaveformData or Unavailable (a remembered failure, so we don't re-decode).
     private val memory = LruCache<String, Any>(MEMORY_CACHE_SIZE)
@@ -80,18 +80,7 @@ class WaveformRepository @Inject constructor(
 
     private fun Any.asWaveform(): WaveformData? = this as? WaveformData
 
-    /** Null when [filePath] isn't a readable local file (e.g. a cloud stream). */
-    private fun cacheKey(filePath: String): String? {
-        val file = File(filePath)
-        if (!file.isFile || !file.canRead()) return null
-        val digest = MessageDigest.getInstance("SHA-1").digest(filePath.toByteArray())
-        val pathHash = digest.take(8).joinToString("") { "%02x".format(it) }
-        return "${pathHash}_${file.length()}_${file.lastModified()}"
-    }
-
-    private fun readDisk(key: String): WaveformData? = runCatching {
-        File(cacheDir, "$key.wf").takeIf { it.isFile }?.readBytes()?.let(WaveformData::decode)
-    }.getOrNull()
+    private fun readDisk(key: String): WaveformData? = readDisk(cacheDir, key)
 
     private fun writeDisk(key: String, data: WaveformData) {
         runCatching {
@@ -114,6 +103,28 @@ class WaveformRepository @Inject constructor(
     }
 
     companion object {
+        /**
+         * The whole-song waveform of [filePath] if one is already on disk (decoded earlier by the
+         * editor); null otherwise. Never decodes. Blocking: call from a background dispatcher.
+         */
+        fun readCached(context: Context, filePath: String): WaveformData? =
+            cacheKey(filePath)?.let { readDisk(cacheDirOf(context), it) }
+
+        private fun cacheDirOf(context: Context) = File(context.cacheDir, CACHE_DIR_NAME)
+
+        /** Null when [filePath] isn't a readable local file (e.g. a cloud stream). */
+        private fun cacheKey(filePath: String): String? {
+            val file = File(filePath)
+            if (!file.isFile || !file.canRead()) return null
+            val digest = MessageDigest.getInstance("SHA-1").digest(filePath.toByteArray())
+            val pathHash = digest.take(8).joinToString("") { "%02x".format(it) }
+            return "${pathHash}_${file.length()}_${file.lastModified()}"
+        }
+
+        private fun readDisk(cacheDir: File, key: String): WaveformData? = runCatching {
+            File(cacheDir, "$key.wf").takeIf { it.isFile }?.readBytes()?.let(WaveformData::decode)
+        }.getOrNull()
+
         /** One peak per this many milliseconds of audio. */
         const val BUCKET_MS = 50
 

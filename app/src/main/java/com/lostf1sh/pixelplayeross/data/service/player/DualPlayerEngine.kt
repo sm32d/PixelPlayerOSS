@@ -15,6 +15,7 @@ import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
+import kotlin.math.abs
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.TrackSelectionParameters
@@ -246,6 +247,7 @@ class DualPlayerEngine @Inject constructor(
         private const val KEY_OFFLOAD_STALLED_BUILD = "offload_stalled_build_fingerprint"
         private const val POST_TRANSITION_OFFLOAD_GUARD_MS = 2_000L
         private const val MIX_VOLUME_LOG_INTERVAL_MS = 500L
+        private const val BEAT_LOCK_STEP_MS = 16L
         private const val MAX_AUXILIARY_TIMELINE_ITEMS = QueueWindowPolicy.MAX_AUXILIARY_TIMELINE_ITEMS
         private val LOCAL_MEDIA_SCHEMES = setOf("content", "file", "android.resource")
         private val REMOTE_MEDIA_SCHEMES = setOf("http", "https", "navidrome", "jellyfin")
@@ -270,6 +272,7 @@ class DualPlayerEngine @Inject constructor(
         get() = shouldEnableAudioOffloadForMode(audioOffloadEnabled, audioOutputMode)
     private val transitionRunTracker = TransitionRunTracker()
     private var transitionJob: Job? = null
+    private var tempoEaseJob: Job? = null
     private var bufferingFallbackJob: Job? = null
     private var transitionRunning = false
     private var auxiliaryPlayerPresented = false
@@ -1491,16 +1494,23 @@ class DualPlayerEngine @Inject constructor(
      * Runs the overlap. With [mix], the window length and both volume lines come from the mix's
      * keyframes instead of [settings]' duration and curves (the caller passes [settings] with
      * `durationMs = mix.windowMs`).
+     *
+     * With [sync] (beatmatching, see [Beatmatch]) this is called [Beatmatch.Sync.prerollMs] before
+     * the window: the incoming song, prepared at [Beatmatch.Sync.prerollStartMs], starts silently,
+     * is pulled into step with the outgoing song, and the window opens when the outgoing song
+     * reaches [Beatmatch.Sync.outPointMs]. It plays at the matched speed through the window and
+     * eases back to its own tempo afterwards.
      */
-    fun performTransition(settings: TransitionSettings, mix: MixTransition? = null) {
+    fun performTransition(settings: TransitionSettings, mix: MixTransition? = null, sync: Beatmatch.Sync? = null) {
         transitionJob?.cancel()
+        tempoEaseJob?.cancel()
         if (volumeBeforeTransition == null) volumeBeforeTransition = playerA.volume
         val transitionRunId = transitionRunTracker.start()
         transitionRunning = true
         auxiliaryPlayerPresented = false
         transitionJob = scope.launch {
             try {
-                performOverlapTransition(settings, mix)
+                performOverlapTransition(settings, mix, sync)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1522,7 +1532,11 @@ class DualPlayerEngine @Inject constructor(
         }
     }
 
-    private suspend fun performOverlapTransition(settings: TransitionSettings, mix: MixTransition? = null) {
+    private suspend fun performOverlapTransition(
+        settings: TransitionSettings,
+        mix: MixTransition? = null,
+        sync: Beatmatch.Sync? = null,
+    ) {
         val auxiliaryPlayer = playerB
         if (auxiliaryPlayer == null || auxiliaryPlayer.mediaItemCount == 0) {
             restoreVolumeBeforeTransition()
@@ -1539,23 +1553,65 @@ class DualPlayerEngine @Inject constructor(
         }
 
         val outgoingStartVolume = (volumeBeforeTransition ?: playerA.volume).coerceIn(0f, 1f)
+        // The user's own playback speed (kept on the outgoing player); beatmatching scales it.
+        val baseSpeed = playerA.playbackParameters.speed
+        val incomingSpeed = sync?.speed ?: 1.0
+        val beatmatching = sync != null
+        val outgoingPlayer = playerA
+        val incomingPlayer = auxiliaryPlayer
+        val lock = sync?.let { BeatLock(it, outgoingPlayer, incomingPlayer, baseSpeed, "TransitionDebug") }
+        lock?.let { incomingPlayer.setPlaybackSpeed(it.matchedSpeed) }
         auxiliaryPlayer.volume = 0f
         if (!playerA.isPlaying && playerA.playbackState == Player.STATE_READY) playerA.play()
         auxiliaryPlayer.playWhenReady = true
         auxiliaryPlayer.play()
 
-        val outgoingPlayer = playerA
-        val incomingPlayer = auxiliaryPlayer
-
         incomingPlayer.repeatMode = outgoingPlayer.repeatMode
         incomingPlayer.shuffleModeEnabled = outgoingPlayer.shuffleModeEnabled
         outgoingPlayer.pauseAtEndOfMediaItems = true
         incomingPlayer.pauseAtEndOfMediaItems = false
+
+        // Pre-roll: the incoming song plays silently and is pulled into step before anyone can
+        // hear it. The window opens when the outgoing song reaches the mix point.
+        if (sync != null && lock != null) {
+            val prerollStartedAt = SystemClock.elapsedRealtime()
+            var lastLog = -1_000L
+            while (outgoingPlayer.currentPosition < sync.outPointMs) {
+                if (!outgoingPlayer.isPlaying) {
+                    // Paused by the user: hold the incoming song too, and pick up when resumed.
+                    if (incomingPlayer.isPlaying) incomingPlayer.pause()
+                } else if (!incomingPlayer.isPlaying) {
+                    incomingPlayer.play()
+                }
+                lock.step()
+                val t = SystemClock.elapsedRealtime() - prerollStartedAt
+                if (t - lastLog >= 250L) {
+                    lastLog = t
+                    Timber.tag("TransitionDebug").d(
+                        "Beatmatch pre-roll t=%dms out=%d in=%d error=%.0fms speed=%.4f",
+                        t, outgoingPlayer.currentPosition, incomingPlayer.currentPosition, lock.errorMs,
+                        incomingPlayer.playbackParameters.speed,
+                    )
+                }
+                delay(BEAT_LOCK_STEP_MS)
+            }
+        }
+
         auxiliaryPlayerPresented = true
         onTransitionDisplayPlayerListeners.forEach { it(incomingPlayer) }
+        // The window opens at exactly the matched speed, and it stays there (those listeners also
+        // put the user's speed on the player they publish).
+        lock?.settle()
+        if (mix != null) {
+            Timber.tag("TransitionDebug").d(
+                "Beatmatch: window opens, incoming speed=%.4f (x%.4f of %.2f), out pos=%d, in pos=%d, error=%.0fms",
+                incomingPlayer.playbackParameters.speed, incomingSpeed, baseSpeed,
+                outgoingPlayer.currentPosition, incomingPlayer.currentPosition, lock?.errorMs ?: 0.0,
+            )
+        }
 
         val duration = settings.durationMs.toLong().coerceAtLeast(500L)
-        val stepMs = 32L
+        val stepMs = if (lock != null) BEAT_LOCK_STEP_MS else 32L
         val startedAtMs = SystemClock.elapsedRealtime()
         var lastMixVolumeLogMs = -MIX_VOLUME_LOG_INTERVAL_MS
 
@@ -1575,21 +1631,26 @@ class DualPlayerEngine @Inject constructor(
             val incomingTarget = incomingTrackReplayGainVolume ?: 1f
             incomingPlayer.volume = (volIn * incomingTarget).coerceIn(0f, 1f)
             outgoingPlayer.volume = (volOut * outgoingStartVolume).coerceIn(0f, 1f)
+            // Audible now: no seeks and no speed changes (each one is a small glitch in the
+            // sound); only measured, so the logs show how well the two stay in step.
+            lock?.measure()
 
             // Mix transitions log the volumes the players really report, a few times a second,
             // so a transition can be checked against the saved curves without listening.
             if (mix != null && (elapsed == duration || elapsed - lastMixVolumeLogMs >= MIX_VOLUME_LOG_INTERVAL_MS)) {
                 lastMixVolumeLogMs = elapsed
                 Timber.tag("TransitionDebug").d(
-                    "Mix volumes t=%dms progress=%.2f out=%.3f (player %.3f) in=%.3f (player %.3f)",
-                    elapsed, progress, volOut, outgoingPlayer.volume, volIn, incomingPlayer.volume
+                    "Mix volumes t=%dms progress=%.2f out=%.3f (player %.3f) in=%.3f (player %.3f) " +
+                        "pos out=%d in=%d speed in=%.4f error=%.0fms",
+                    elapsed, progress, volOut, outgoingPlayer.volume, volIn, incomingPlayer.volume,
+                    outgoingPlayer.currentPosition, incomingPlayer.currentPosition,
+                    incomingPlayer.playbackParameters.speed, lock?.errorMs ?: 0.0,
                 )
             }
 
             if (elapsed >= duration) break
             delay(stepMs)
         }
-
         outgoingPlayer.volume = 0f
         incomingPlayer.volume = incomingTrackReplayGainVolume ?: 1f
         incomingTrackReplayGainVolume = null
@@ -1617,12 +1678,50 @@ class DualPlayerEngine @Inject constructor(
 
         onPlayerSwappedListeners.forEach { it(playerA) }
         _activeAudioSessionId.value = playerA.audioSessionId
+        // The swap listeners put the user's speed back; keep the matched tempo and ease out of it.
+        if (beatmatching) {
+            playerA.setPlaybackSpeed((baseSpeed * incomingSpeed).toFloat())
+            startTempoEaseBack(playerA, baseSpeed, incomingSpeed)
+        }
 
         playerB?.pause()
         playerB?.stop()
         playerB?.clearMediaItems()
 
         setPauseAtEndOfMediaItems(false)
+    }
+
+    /**
+     * Brings the new master player from the beatmatched tempo back to the user's speed in
+     * [Beatmatch.EASE_BACK_STEPS] steps over [Beatmatch.EASE_BACK_MS], now that the outgoing song is
+     * gone and nothing has to stay in step.
+     */
+    private fun startTempoEaseBack(player: Player, baseSpeed: Float, speed: Double) {
+        tempoEaseJob?.cancel()
+        tempoEaseJob = scope.launch {
+            val startedAt = SystemClock.elapsedRealtime()
+            val songId = player.currentMediaItem?.mediaId
+            var lastLog = -1_000L
+            while (true) {
+                if (player !== playerA) return@launch
+                // Skipped to another song: it plays at the user's speed straight away.
+                if (player.currentMediaItem?.mediaId != songId) {
+                    player.setPlaybackSpeed(baseSpeed)
+                    return@launch
+                }
+                val elapsed = SystemClock.elapsedRealtime() - startedAt
+                val factor = Beatmatch.easeBackStep(speed, elapsed)
+                val target = (baseSpeed * factor).toFloat()
+                // Only on a step: setting the same speed again is free, a new one is a tiny glitch.
+                if (abs(player.playbackParameters.speed - target) > 1e-4f) player.setPlaybackSpeed(target)
+                if (elapsed - lastLog >= 2_000L || factor == 1.0) {
+                    lastLog = elapsed
+                    Timber.tag("TransitionDebug").d("Beatmatch ease-back t=%dms speed=%.4f", elapsed, player.playbackParameters.speed)
+                }
+                if (factor == 1.0) return@launch
+                delay(50L)
+            }
+        }
     }
 
     private fun ensureQueueSnapshot(): List<MediaItem> {

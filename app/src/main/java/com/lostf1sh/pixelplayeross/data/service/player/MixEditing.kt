@@ -98,13 +98,14 @@ object MixEditing {
     data class Slide(val rawMs: Long, val shownMs: Long)
 
     /**
-     * Moves a song position by [deltaMs] and snaps it to [grid]'s beats. [clamp] keeps a position
-     * playable; [slide] carries on a drag whose last result is still [currentMs].
+     * Moves a song position by [deltaMs] and [snap]s it (to beats, or to lined-up bars when
+     * beatmatching). [clamp] keeps a position playable; [slide] carries on a drag whose last result
+     * is still [currentMs].
      */
-    fun slide(currentMs: Long, deltaMs: Long, slide: Slide?, grid: BeatGrid?, clamp: (Long) -> Long): Slide {
+    fun slide(currentMs: Long, deltaMs: Long, slide: Slide?, snap: (Long) -> Long, clamp: (Long) -> Long): Slide {
         val base = if (slide != null && slide.shownMs == currentMs) slide.rawMs else currentMs
         val raw = clamp(base + deltaMs)
-        return Slide(rawMs = raw, shownMs = clamp(snapToBeat(raw, grid)))
+        return Slide(rawMs = raw, shownMs = clamp(snap(raw)))
     }
 
     /** Marks [mix] as hand-edited. */

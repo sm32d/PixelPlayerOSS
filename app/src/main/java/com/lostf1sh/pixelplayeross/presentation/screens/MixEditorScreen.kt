@@ -104,6 +104,7 @@ import com.lostf1sh.pixelplayeross.data.model.EqPreset
 import com.lostf1sh.pixelplayeross.data.model.FilterPreset
 import com.lostf1sh.pixelplayeross.data.model.MixPreset
 import com.lostf1sh.pixelplayeross.data.model.MixTransition
+import com.lostf1sh.pixelplayeross.data.service.player.Beatmatch
 import com.lostf1sh.pixelplayeross.data.service.player.MixStyles
 import com.lostf1sh.pixelplayeross.data.model.Song
 import com.lostf1sh.pixelplayeross.data.model.VolumeKeyframe
@@ -377,12 +378,7 @@ private fun MixEditorContent(
                 accent = MaterialTheme.colorScheme.outline,
                 value = none,
             )
-            ComingLaneRow(
-                label = stringResource(R.string.dj_mix_lane_beatmatching),
-                accent = null,
-                value = null,
-                switchOn = recipe?.beatmatch ?: false,
-            )
+            BeatmatchRow(state = state, mix = mix, onCheckedChange = viewModel::setBeatmatch)
         }
         Text(
             stringResource(R.string.dj_mix_volume_hint),
@@ -495,6 +491,46 @@ private fun MixLaneRow(label: String, accent: Color, value: String, onClick: () 
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 4.dp),
+        )
+    }
+}
+
+/**
+ * Beatmatching on/off. Says what it does for this pair (the tempo it plays the incoming song at)
+ * or why it can't: no steady beat in a song, or tempos too far apart.
+ */
+@Composable
+private fun BeatmatchRow(state: MixEditorUiState, mix: MixTransition, onCheckedChange: (Boolean) -> Unit) {
+    val unavailable = state.beatmatchUnavailable
+    val loading = state.gridsLoading
+    val enabled = !loading && unavailable == null
+    val detail = when {
+        loading -> stringResource(R.string.dj_mix_beatmatch_listening)
+        unavailable == Beatmatch.Unavailable.NO_BEAT -> stringResource(R.string.dj_mix_beatmatch_no_beat)
+        unavailable == Beatmatch.Unavailable.TEMPO_TOO_FAR -> stringResource(R.string.dj_mix_beatmatch_too_far)
+        !mix.beatmatchOn -> stringResource(R.string.dj_mix_beatmatch_off)
+        else -> {
+            val inBpm = state.toGrid?.bpm ?: 0f
+            val playedAt = inBpm * (state.beatmatchSpeed ?: 1.0)
+            stringResource(R.string.dj_mix_beatmatch_detail, inBpm.roundToInt(), playedAt.roundToInt())
+        }
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(enabled = enabled) { onCheckedChange(!mix.beatmatchOn) }
+            .padding(horizontal = 8.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(stringResource(R.string.dj_mix_lane_beatmatching), style = MaterialTheme.typography.titleMedium)
+            Text(detail, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(
+            checked = enabled && mix.beatmatchOn,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
         )
     }
 }
@@ -882,10 +918,13 @@ private fun MixTimeline(
         }
 
         drawWaveform(g, state.fromWaveform, mix.outPointMs, outgoing = true, colors = bandColors, windowMs = mix.windowMs)
-        drawWaveform(g, state.toWaveform, mix.inStartMs, outgoing = false, colors = bandColors, windowMs = mix.windowMs)
+        // Beatmatched, the incoming song plays faster or slower: drawn stretched the same way, its
+        // bars sit under the outgoing song's.
+        val inSpeed = state.beatmatchSpeed ?: 1.0
+        drawWaveform(g, state.toWaveform, mix.inStartMs, outgoing = false, colors = bandColors, windowMs = mix.windowMs, speed = inSpeed)
         // Over the waveform, so the bars stay visible on loud passages; under the volume lines.
         fromGrid?.let { drawBeatGrid(g, it, mix.outPointMs, outgoing = true, color = barLineColor) }
-        toGrid?.let { drawBeatGrid(g, it, mix.inStartMs, outgoing = false, color = barLineColor) }
+        toGrid?.let { drawBeatGrid(g, it, mix.inStartMs, outgoing = false, color = barLineColor, speed = inSpeed) }
 
         // Lane divider.
         drawLine(gridColor, Offset(0f, g.laneHeight), Offset(size.width, g.laneHeight), strokeWidth = 2f)
@@ -919,19 +958,21 @@ private fun DrawScope.drawBeatGrid(
     songTimeAtWindowStartMs: Long,
     outgoing: Boolean,
     color: Color,
+    /** How fast the song plays (beatmatching): song time = window time x speed. */
+    speed: Double = 1.0,
 ) {
     val top = g.laneTop(outgoing)
     val bottom = top + g.laneHeight
-    val firstSongMs = songTimeAtWindowStartMs + g.relOf(0f)
-    val lastSongMs = songTimeAtWindowStartMs + g.relOf(size.width)
-    var index = grid.beatIndexAtOrBefore(firstSongMs.toDouble())
+    val firstSongMs = songTimeAtWindowStartMs + g.relOf(0f) * speed
+    val lastSongMs = songTimeAtWindowStartMs + g.relOf(size.width) * speed
+    var index = grid.beatIndexAtOrBefore(firstSongMs)
     // Too dense to read when zoomed far out: then only bars.
-    val beatPx = (grid.beatMs * size.width / g.totalMs).toFloat()
+    val beatPx = (grid.beatMs / speed * size.width / g.totalMs).toFloat()
     while (true) {
         val songMs = grid.beatTimeMs(index)
         if (songMs > lastSongMs) break
         if (songMs >= 0) {
-            val x = g.xOf((songMs - songTimeAtWindowStartMs).toFloat())
+            val x = g.xOf(((songMs - songTimeAtWindowStartMs) / speed).toFloat())
             if (grid.isDownbeat(index)) {
                 drawLine(color.copy(alpha = 0.5f), Offset(x, top), Offset(x, bottom), strokeWidth = 1.dp.toPx())
             } else if (beatPx >= 4.dp.toPx()) {
@@ -951,6 +992,7 @@ private fun DrawScope.drawWaveform(
     outgoing: Boolean,
     colors: WaveColors,
     windowMs: Long,
+    speed: Double = 1.0,
 ) {
     if (waveform == null) return
     val barWidth = 3.dp.toPx()
@@ -962,7 +1004,7 @@ private fun DrawScope.drawWaveform(
     var x = 0f
     while (x < size.width) {
         val rel = g.relOf(x)
-        val songMs = songTimeAtWindowStartMs + rel.toLong()
+        val songMs = songTimeAtWindowStartMs + (rel * speed).toLong()
         // A partly decoded waveform knows nothing about the rest of the song: draw nothing there
         // rather than bars that read as silence.
         if (waveform.isPartial && !waveform.covers(songMs)) {

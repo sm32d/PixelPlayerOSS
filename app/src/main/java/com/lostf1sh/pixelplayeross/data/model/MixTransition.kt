@@ -70,7 +70,14 @@ data class MixTransition(
      * Missing from older stored data, which reads as false.
      */
     val keepsPairSettings: Boolean = false,
+    /**
+     * Whether the incoming song is played at the outgoing song's tempo with its bars lined up
+     * (Spotify's Beatmatching). Null (also older stored data) means on, the default; false is off.
+     */
+    val beatmatch: Boolean? = null,
 ) {
+    val beatmatchOn: Boolean get() = beatmatch != false
+
     /**
      * Returns this transition made safe to play: finite non-negative times, a window of at least
      * [MIN_WINDOW_MS], and volume lines that are sorted, clamped to 0..1, never empty and with

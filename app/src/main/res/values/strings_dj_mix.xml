@@ -50,6 +50,11 @@
     <string name="dj_mix_lane_effects">Effects</string>
     <string name="dj_mix_lane_looping">Looping</string>
     <string name="dj_mix_lane_beatmatching">Beatmatching</string>
+    <string name="dj_mix_beatmatch_detail">Plays the next song at %2$d bpm (from %1$d), bars lined up</string>
+    <string name="dj_mix_beatmatch_off">Songs keep their own tempo</string>
+    <string name="dj_mix_beatmatch_listening">Listening for the beat…</string>
+    <string name="dj_mix_beatmatch_no_beat">No steady beat found in one of the songs</string>
+    <string name="dj_mix_beatmatch_too_far">Tempos too far apart to match</string>
     <string name="dj_mix_eq_centre_bass_swap">Centre bass swap</string>
     <string name="dj_mix_eq_end_bass_swap">End bass swap</string>
     <string name="dj_mix_eq_start_bass_swap">Start bass swap</string>

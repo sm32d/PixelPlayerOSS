@@ -67,6 +67,9 @@ class TransitionController @Inject constructor(
     private var incomingMixJob: Job? = null
 
     private companion object {
+        /** Less time than this before the window is too little to pull the incoming song into step. */
+        const val BEATMATCH_MIN_PREROLL_MS = 400L
+
         /** Tries to publish the incoming song's mix point while waiting for the mix to start. */
         const val MAX_INCOMING_MIX_ATTEMPTS = 8
         const val INCOMING_MIX_RETRY_MS = 1_000L
@@ -497,12 +500,12 @@ class TransitionController @Inject constructor(
 
             // Fitted inside both songs: the incoming one must last the whole window from where it
             // starts, or its player would run on into the song after it while the lines still play.
-            val mix = MixPlanner.fit(
+            val fitted = MixPlanner.fit(
                 stored ?: autoMixFor(currentMediaItem, nextMediaItem, duration),
                 duration,
                 durationHintOf(nextMediaItem),
             )
-            if (mix == null) {
+            if (fitted == null) {
                 Timber.tag("TransitionDebug").w("Mix: track too short (duration=%d).", duration)
                 mixPlaybackState.remove(currentMediaItem.mediaId)
                 engine.cancelNext()
@@ -510,8 +513,15 @@ class TransitionController @Inject constructor(
                 return@collectLatest
             }
 
+            // Beatmatching: the incoming song starts where its bars meet the outgoing song's and
+            // plays at its tempo for the window. Without a clear beat the mix plays as drawn.
+            val beatmatch = if (fitted.beatmatchOn) beatmatchFor(currentMediaItem, nextMediaItem, fitted) else null
+            val mix = beatmatch?.let { fitted.copy(inStartMs = it.inStartMs) } ?: fitted
+            // Beatmatched, the incoming song starts silently a little early to be pulled into step.
+            val sync = beatmatch?.let { Beatmatch.syncFor(it, mix.outPointMs) }
+
             // The incoming song is positioned where the (fitted) mix starts it before it is prepared.
-            engine.prepareNext(transitionTarget, startPositionMs = mix.inStartMs)
+            engine.prepareNext(transitionTarget, startPositionMs = sync?.prerollStartMs ?: mix.inStartMs)
 
             Timber.tag("TransitionDebug").d(
                 "Mix scheduled: out=%d ms, in=%d ms, window=%d ms, preset=%s, authored=%s",
@@ -538,8 +548,9 @@ class TransitionController @Inject constructor(
             // up (or make the current mix miss) its saved point.
             startIncomingMixLookahead(nextMediaItem, playlistId)
 
-            while (player.currentPosition < mix.outPointMs && currentCoroutineContext().isActive) {
-                val remaining = mix.outPointMs - player.currentPosition
+            val startAtMs = mix.outPointMs - (sync?.prerollMs ?: 0L)
+            while (player.currentPosition < startAtMs && currentCoroutineContext().isActive) {
+                val remaining = startAtMs - player.currentPosition
                 val sleep = when {
                     remaining > 5000 -> 1000L
                     remaining > 1000 -> 250L
@@ -555,7 +566,7 @@ class TransitionController @Inject constructor(
 
             // Already past the planned start (seek, resume): shrink the window to what is left
             // of the outgoing song rather than skipping the mix.
-            val remaining = (duration - player.currentPosition).coerceAtLeast(0L)
+            val remaining = (duration - maxOf(player.currentPosition, if (sync != null) mix.outPointMs else 0L)).coerceAtLeast(0L)
             if (remaining < MixPlanner.MIN_WINDOW_MS) {
                 Timber.tag("TransitionDebug").w("Mix: too close to end (%d ms left). Skipping.", remaining)
                 engine.cancelNext()
@@ -563,9 +574,37 @@ class TransitionController @Inject constructor(
                 return@collectLatest
             }
             val window = mix.windowMs.coerceAtMost(remaining)
-            engine.performTransition(settings.copy(durationMs = window.toInt()), mix)
+            // Too late to pull the incoming song into step before the window (a seek right up to
+            // the mix point): it then plays as drawn, at its own tempo.
+            val inStep = sync?.takeIf { player.currentPosition < mix.outPointMs - BEATMATCH_MIN_PREROLL_MS }
+            engine.performTransition(settings.copy(durationMs = window.toInt()), mix, sync = inStep)
         }
     }
+
+    /**
+     * The beatmatch plan for the pair (see [Beatmatch]), or null when either song has no clear
+     * steady beat, isn't local, their tempos are too far apart, or finding out takes too long.
+     */
+    private suspend fun beatmatchFor(outgoing: MediaItem, incoming: MediaItem, mix: MixTransition): Beatmatch.Plan? {
+        val outPath = pathOf(outgoing) ?: return null
+        val inPath = pathOf(incoming) ?: return null
+        val grids = withTimeoutOrNull(ANALYSIS_TIMEOUT_MS) {
+            coroutineScope {
+                val outGrid = async { transitionAnalyzer.beatGridFor(outPath, end = true) }
+                val inGrid = async { transitionAnalyzer.beatGridFor(inPath, end = false) }
+                outGrid.await() to inGrid.await()
+            }
+        }
+        val plan = Beatmatch.plan(mix, grids?.first, grids?.second, durationHintOf(incoming))
+        Timber.tag("TransitionDebug").d(
+            "Beatmatch plan: out=%s in=%s -> %s (asked in=%d)",
+            grids?.first, grids?.second, plan, mix.inStartMs,
+        )
+        return plan
+    }
+
+    private fun pathOf(item: MediaItem): String? =
+        item.mediaMetadata.extras?.getString(MediaItemBuilder.EXTERNAL_EXTRA_FILE_PATH)?.takeIf { it.isNotBlank() }
 
     /**
      * The transition for a pair nobody has edited: chosen from how the two songs start and end
