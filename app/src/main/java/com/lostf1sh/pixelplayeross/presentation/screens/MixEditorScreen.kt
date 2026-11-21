@@ -96,8 +96,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.lostf1sh.pixelplayeross.R
 import com.lostf1sh.pixelplayeross.data.media.WaveformData
+import androidx.compose.material3.Switch
+import androidx.compose.ui.draw.alpha
+import com.lostf1sh.pixelplayeross.data.model.EffectPreset
+import com.lostf1sh.pixelplayeross.data.model.EqPreset
+import com.lostf1sh.pixelplayeross.data.model.FilterPreset
 import com.lostf1sh.pixelplayeross.data.model.MixPreset
 import com.lostf1sh.pixelplayeross.data.model.MixTransition
+import com.lostf1sh.pixelplayeross.data.service.player.MixStyles
 import com.lostf1sh.pixelplayeross.data.model.Song
 import com.lostf1sh.pixelplayeross.data.model.VolumeKeyframe
 import com.lostf1sh.pixelplayeross.data.service.player.MixEditing
@@ -347,6 +353,35 @@ private fun MixEditorContent(
                     else stringResource(R.string.dj_mix_lane_custom),
                 onClick = { showVolumeSheet = true },
             )
+            // The lanes still to come: shown with what the style will set on them, but not playable yet.
+            val recipe = MixStyles.recipes[mix.preset]
+            val none = stringResource(R.string.dj_mix_lane_none)
+            ComingLaneRow(
+                label = stringResource(R.string.dj_mix_lane_eq),
+                accent = MaterialTheme.colorScheme.tertiary,
+                value = recipe?.eq?.takeIf { it != EqPreset.NONE }?.let { eqPresetLabel(it) } ?: none,
+            )
+            ComingLaneRow(
+                label = stringResource(R.string.dj_mix_lane_filter),
+                accent = MaterialTheme.colorScheme.secondary,
+                value = recipe?.filter?.takeIf { it != FilterPreset.NONE }?.let { filterPresetLabel(it) } ?: none,
+            )
+            ComingLaneRow(
+                label = stringResource(R.string.dj_mix_lane_effects),
+                accent = MaterialTheme.colorScheme.onSurface,
+                value = recipe?.effects?.takeIf { it != EffectPreset.NONE }?.let { effectPresetLabel(it) } ?: none,
+            )
+            ComingLaneRow(
+                label = stringResource(R.string.dj_mix_lane_looping),
+                accent = MaterialTheme.colorScheme.outline,
+                value = none,
+            )
+            ComingLaneRow(
+                label = stringResource(R.string.dj_mix_lane_beatmatching),
+                accent = null,
+                value = null,
+                switchOn = recipe?.beatmatch ?: false,
+            )
         }
         Text(
             stringResource(R.string.dj_mix_volume_hint),
@@ -462,6 +497,77 @@ private fun MixLaneRow(label: String, accent: Color, value: String, onClick: () 
         )
     }
 }
+
+/**
+ * A lane that isn't played yet (EQ, Filter, Effects, Looping, Beatmatching): dimmed and not
+ * tappable, labelled "Coming soon", showing what the selected style will set on it. With
+ * [switchOn] non-null the row ends in a (disabled) switch instead of a value.
+ */
+@Composable
+private fun ComingLaneRow(label: String, accent: Color?, value: String?, switchOn: Boolean? = null) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(0.5f)
+            .padding(horizontal = 8.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (accent != null) {
+            Box(Modifier.width(4.dp).height(24.dp).clip(CircleShape).background(accent))
+            Spacer(Modifier.width(12.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.titleMedium)
+            Text(
+                stringResource(R.string.dj_mix_lane_coming_soon),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (switchOn != null) {
+            Switch(checked = switchOn, onCheckedChange = null, enabled = false)
+        } else if (value != null) {
+            Text(value, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun eqPresetLabel(preset: EqPreset): String = stringResource(
+    when (preset) {
+        EqPreset.NONE -> R.string.dj_mix_lane_none
+        EqPreset.CENTRE_BASS_SWAP -> R.string.dj_mix_eq_centre_bass_swap
+        EqPreset.END_BASS_SWAP -> R.string.dj_mix_eq_end_bass_swap
+        EqPreset.START_BASS_SWAP -> R.string.dj_mix_eq_start_bass_swap
+        EqPreset.THREE_BAND_FADE -> R.string.dj_mix_eq_three_band_fade
+        EqPreset.QUICK_BASS_CUT -> R.string.dj_mix_eq_quick_bass_cut
+    }
+)
+
+@Composable
+private fun filterPresetLabel(preset: FilterPreset): String = stringResource(
+    when (preset) {
+        FilterPreset.NONE -> R.string.dj_mix_lane_none
+        FilterPreset.LOW_PASS_OUT -> R.string.dj_mix_filter_low_pass_out
+        FilterPreset.LOW_PASS_IN -> R.string.dj_mix_filter_low_pass_in
+        FilterPreset.LOW_PASS_IN_LOW_PASS_OUT -> R.string.dj_mix_filter_lp_in_lp_out
+        FilterPreset.LOW_PASS_IN_HIGH_PASS_OUT -> R.string.dj_mix_filter_lp_in_hp_out
+        FilterPreset.HIGH_PASS_IN_HIGH_PASS_OUT -> R.string.dj_mix_filter_hp_in_hp_out
+        FilterPreset.HIGH_PASS_HALF_OUT -> R.string.dj_mix_filter_hp_half_out
+    }
+)
+
+@Composable
+private fun effectPresetLabel(preset: EffectPreset): String = stringResource(
+    when (preset) {
+        EffectPreset.NONE -> R.string.dj_mix_lane_none
+        EffectPreset.REVERB_OUT_CENTRE -> R.string.dj_mix_fx_reverb_out_centre
+        EffectPreset.REVERB_CUT_END -> R.string.dj_mix_fx_reverb_cut_end
+        EffectPreset.REVERB_OUT_END -> R.string.dj_mix_fx_reverb_out_end
+        EffectPreset.ECHO_HALF_CUT_END -> R.string.dj_mix_fx_echo_half_cut_end
+        EffectPreset.ECHO_HALF_OUT_END -> R.string.dj_mix_fx_echo_half_out_end
+    }
+)
 
 /** The Volume lane's presets; the current one is ticked. */
 @OptIn(ExperimentalMaterial3Api::class)
