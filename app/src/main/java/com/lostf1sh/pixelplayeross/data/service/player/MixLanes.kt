@@ -1,5 +1,6 @@
 package com.lostf1sh.pixelplayeross.data.service.player
 
+import com.lostf1sh.pixelplayeross.data.model.EffectPreset
 import com.lostf1sh.pixelplayeross.data.model.EqPreset
 import com.lostf1sh.pixelplayeross.data.model.FilterPreset
 import com.lostf1sh.pixelplayeross.data.model.MixPreset
@@ -8,6 +9,12 @@ import com.lostf1sh.pixelplayeross.data.model.VolumeKeyframe
 
 /** One song's EQ lines: gain (0 = band removed, 1 = untouched) of its bass, mids and highs. */
 data class EqLines(val low: List<VolumeKeyframe>, val mid: List<VolumeKeyframe>, val high: List<VolumeKeyframe>)
+
+/** One song's Effects lines: how much of it is sent into the effect, and how much is heard dry. */
+data class EffectLines(val send: List<VolumeKeyframe>, val dry: List<VolumeKeyframe>)
+
+/** The effect an Effects preset uses. */
+enum class EffectKind { NONE, REVERB, ECHO }
 
 /** A lane's lines for both songs of the pair. */
 data class LanePair<T>(val outgoing: T, val incoming: T)
@@ -39,11 +46,16 @@ object MixLanes {
     fun filterOf(mix: MixTransition): FilterPreset =
         mix.filter ?: MixStyles.recipes[mix.preset]?.filter ?: FilterPreset.NONE
 
-    /** True when [mix] needs the EQ/filter processor (and so the PCM audio path). */
-    fun usesDsp(mix: MixTransition): Boolean = eqOf(mix) != EqPreset.NONE || filterOf(mix) != FilterPreset.NONE
+    fun effectsOf(mix: MixTransition): EffectPreset =
+        mix.effects ?: MixStyles.recipes[mix.preset]?.effects ?: EffectPreset.NONE
+
+    /** True when [mix] needs the mix processor (and so the PCM audio path). */
+    fun usesDsp(mix: MixTransition): Boolean =
+        eqOf(mix) != EqPreset.NONE || filterOf(mix) != FilterPreset.NONE || effectsOf(mix) != EffectPreset.NONE
 
     /** [mix] with its lane presets written out, so a later change of style label can't change them. */
-    fun pinned(mix: MixTransition): MixTransition = mix.copy(eq = eqOf(mix), filter = filterOf(mix))
+    fun pinned(mix: MixTransition): MixTransition =
+        mix.copy(eq = eqOf(mix), filter = filterOf(mix), effects = effectsOf(mix))
 
     /** The lane presets a style sets: its recipe's, none for Auto and No transition, unchanged for Custom. */
     fun forStyle(mix: MixTransition, style: MixPreset): MixTransition = when (style) {
@@ -51,7 +63,46 @@ object MixLanes {
         else -> mix.copy(
             eq = MixStyles.recipes[style]?.eq ?: EqPreset.NONE,
             filter = MixStyles.recipes[style]?.filter ?: FilterPreset.NONE,
+            effects = MixStyles.recipes[style]?.effects ?: EffectPreset.NONE,
         )
+    }
+
+    /** Which effect an Effects preset uses. */
+    fun effectKind(preset: EffectPreset): EffectKind = when (preset) {
+        EffectPreset.NONE -> EffectKind.NONE
+        EffectPreset.REVERB_OUT_CENTRE, EffectPreset.REVERB_CUT_END, EffectPreset.REVERB_OUT_END -> EffectKind.REVERB
+        EffectPreset.ECHO_HALF_CUT_END, EffectPreset.ECHO_HALF_OUT_END -> EffectKind.ECHO
+    }
+
+    /**
+     * An Effects preset's lines: [EffectLines.send] is how much of the song goes into the reverb
+     * or echo (0..1), [EffectLines.dry] how much of the song itself is still heard. The effect's
+     * tail keeps ringing after the send closes, so a song "goes out" into its reverb or echo:
+     *  - out centre: the song washes into reverb in the middle and stops; its tail rings on;
+     *  - cut end: the send opens late, then the song stops and its tail rings out (as the
+     *    window still has a little over a quarter to go, the tail is heard);
+     *  - out end: the song fades into the effect over the second half.
+     * Only the outgoing song has effects; the incoming song's lines are neutral.
+     */
+    fun effectLines(preset: EffectPreset): LanePair<EffectLines> {
+        val none = EffectLines(send = flat(0f), dry = FULL)
+        val out = when (preset) {
+            EffectPreset.NONE -> none
+            // The send closes with the song, so what follows is the tail alone.
+            EffectPreset.REVERB_OUT_CENTRE -> EffectLines(
+                send = listOf(k(0f, 0f), k(0.3f, 0f), k(0.5f, 1f), k(0.55f, 0f), k(1f, 0f)),
+                dry = listOf(k(0f, 1f), k(0.45f, 1f), k(0.55f, 0f), k(1f, 0f)),
+            )
+            EffectPreset.REVERB_CUT_END, EffectPreset.ECHO_HALF_CUT_END -> EffectLines(
+                send = listOf(k(0f, 0f), k(0.55f, 0f), k(0.7f, 1f), k(0.72f, 0f), k(1f, 0f)),
+                dry = listOf(k(0f, 1f), k(0.7f, 1f), k(0.72f, 0f), k(1f, 0f)),
+            )
+            EffectPreset.REVERB_OUT_END, EffectPreset.ECHO_HALF_OUT_END -> EffectLines(
+                send = listOf(k(0f, 0f), k(0.5f, 0f), k(0.75f, 1f), k(1f, 1f)),
+                dry = listOf(k(0f, 1f), k(0.6f, 1f), k(0.9f, 0f), k(1f, 0f)),
+            )
+        }
+        return LanePair(out, none)
     }
 
     /** A bass handover centred on [at]: the outgoing bass goes as the incoming bass comes in. */
@@ -110,12 +161,20 @@ object MixLanes {
      * longer in song time (beatmatching plays it faster or slower). Null when the mix has neither
      * lane, or neither touches this song.
      */
-    fun automationFor(mix: MixTransition, outgoing: Boolean, incomingSpeed: Double = 1.0): MixDspAutomation? {
+    fun automationFor(
+        mix: MixTransition,
+        outgoing: Boolean,
+        incomingSpeed: Double = 1.0,
+        /** The outgoing song's beat length, which times the echo (half a beat); 120 bpm when unknown. */
+        beatMs: Double? = null,
+    ): MixDspAutomation? {
         val eq = eqOf(mix)
         val filter = filterOf(mix)
-        if (eq == EqPreset.NONE && filter == FilterPreset.NONE) return null
+        val effects = effectsOf(mix)
+        if (eq == EqPreset.NONE && filter == FilterPreset.NONE && effects == EffectPreset.NONE) return null
         val eqLines = eqLines(eq).let { if (outgoing) it.outgoing else it.incoming }
         val filterLine = filterLines(filter).let { if (outgoing) it.outgoing else it.incoming }
+        val effectLines = effectLines(effects).let { if (outgoing) it.outgoing else it.incoming }
         val startMs = if (outgoing) mix.outPointMs else mix.inStartMs
         val lengthMs = if (outgoing) mix.windowMs.toDouble() else mix.windowMs * incomingSpeed
         return MixDspAutomation(
@@ -125,6 +184,15 @@ object MixLanes {
             mid = eqLines.mid,
             high = eqLines.high,
             filter = filterLine,
+            effect = effectKind(effects),
+            send = effectLines.send,
+            dry = effectLines.dry,
+            echoDelayMs = (beatMs?.takeIf { it in 150.0..2_000.0 } ?: DEFAULT_BEAT_MS) * ECHO_BEATS,
         ).takeUnless { it.isNeutral }
     }
+
+    private const val DEFAULT_BEAT_MS = 500.0
+
+    /** "Echo ½": one repeat every half beat. */
+    private const val ECHO_BEATS = 0.5
 }

@@ -1,5 +1,6 @@
 package com.lostf1sh.pixelplayeross.data.service.player
 
+import com.lostf1sh.pixelplayeross.data.model.EffectPreset
 import com.lostf1sh.pixelplayeross.data.model.EqPreset
 import com.lostf1sh.pixelplayeross.data.model.FilterPreset
 import com.lostf1sh.pixelplayeross.data.model.MixPreset
@@ -32,6 +33,40 @@ class MixLanesTest {
             assertEquals(MixLanes.FILTER_NEUTRAL, MixEnvelope.volumeAt(l.outgoing, 0f), "$preset outgoing")
             assertEquals(MixLanes.FILTER_NEUTRAL, MixEnvelope.volumeAt(l.incoming, 1f), "$preset incoming")
         }
+    }
+
+    @Test
+    fun `effects start neutral and touch only the outgoing song`() {
+        EffectPreset.entries.forEach { preset ->
+            val l = MixLanes.effectLines(preset)
+            assertEquals(0f, MixEnvelope.volumeAt(l.outgoing.send, 0f), "$preset send at the start")
+            assertEquals(1f, MixEnvelope.volumeAt(l.outgoing.dry, 0f), "$preset dry at the start")
+            assertTrue(l.incoming.send.all { it.v == 0f } && l.incoming.dry.all { it.v == 1f }, "$preset incoming")
+        }
+        // Cut presets close the send with the song, so the tail is heard alone.
+        val cut = MixLanes.effectLines(EffectPreset.REVERB_CUT_END).outgoing
+        assertEquals(0f, MixEnvelope.volumeAt(cut.dry, 0.8f))
+        assertEquals(0f, MixEnvelope.volumeAt(cut.send, 0.8f))
+    }
+
+    @Test
+    fun `styles and older mixes get their recipe's effect`() {
+        assertEquals(EffectPreset.REVERB_OUT_END, MixPresets.apply(mix, MixPreset.SURGE).effects)
+        val stored = MixTransition.fromJson("""{"outPointMs":1000,"windowMs":8000,"preset":"AFTERGLOW"}""")!!
+        assertEquals(EffectPreset.REVERB_OUT_CENTRE, MixLanes.effectsOf(stored))
+        assertEquals(EffectPreset.REVERB_OUT_CENTRE, MixEditing.custom(stored).effects)
+    }
+
+    @Test
+    fun `the echo repeats every half beat`() {
+        val m = mix.copy(eq = EqPreset.NONE, filter = FilterPreset.NONE, effects = EffectPreset.ECHO_HALF_OUT_END)
+        val auto = MixLanes.automationFor(m, outgoing = true, beatMs = 60_000.0 / 128)!!
+        assertEquals(EffectKind.ECHO, auto.effect)
+        assertEquals(60_000.0 / 128 / 2, auto.echoDelayMs, 1e-9)
+        // No tempo known: 120 bpm.
+        assertEquals(250.0, MixLanes.automationFor(m, outgoing = true)!!.echoDelayMs, 1e-9)
+        // Nothing for the incoming song.
+        assertNull(MixLanes.automationFor(m, outgoing = false))
     }
 
     @Test

@@ -527,7 +527,8 @@ class TransitionController @Inject constructor(
 
             // EQ and Filter lanes, placed on each song's own timeline (the incoming window lasts
             // longer or shorter in song time when beatmatching changes its speed).
-            engine.setOutgoingMixDsp(MixLanes.automationFor(mix, outgoing = true))
+            val beatMs = echoBeatMsFor(currentMediaItem, mix)
+            engine.setOutgoingMixDsp(MixLanes.automationFor(mix, outgoing = true, beatMs = beatMs))
             // The incoming song is positioned where the (fitted) mix starts it before it is prepared.
             engine.prepareNext(
                 transitionTarget,
@@ -537,9 +538,10 @@ class TransitionController @Inject constructor(
             )
 
             Timber.tag("TransitionDebug").d(
-                "Mix scheduled: out=%d ms, in=%d ms, window=%d ms, preset=%s, eq=%s, filter=%s, authored=%s",
+                "Mix scheduled: out=%d ms, in=%d ms, window=%d ms, preset=%s, eq=%s, filter=%s, effects=%s " +
+                    "(beat %s ms), authored=%s",
                 mix.outPointMs, mix.inStartMs, mix.windowMs, mix.preset,
-                MixLanes.eqOf(mix), MixLanes.filterOf(mix), stored != null
+                MixLanes.eqOf(mix), MixLanes.filterOf(mix), MixLanes.effectsOf(mix), beatMs?.toInt(), stored != null
             )
 
             mixPlaybackState.set(
@@ -599,7 +601,7 @@ class TransitionController @Inject constructor(
                     outPointMs = if (startedLate) player.currentPosition else mix.outPointMs,
                     windowMs = window,
                 )
-                engine.setOutgoingMixDsp(MixLanes.automationFor(played, outgoing = true))
+                engine.setOutgoingMixDsp(MixLanes.automationFor(played, outgoing = true, beatMs = beatMs))
                 engine.setIncomingMixDsp(
                     MixLanes.automationFor(played, outgoing = false, incomingSpeed = inStep?.speed ?: 1.0)
                 )
@@ -628,6 +630,18 @@ class TransitionController @Inject constructor(
             grids?.first, grids?.second, plan, mix.inStartMs,
         )
         return plan
+    }
+
+    /**
+     * The outgoing song's beat length when its mix echoes (the repeats fall on its half beats):
+     * from its beat grid, else its tempo tag; null (120 bpm) when neither is known or no echo.
+     */
+    private suspend fun echoBeatMsFor(outgoing: MediaItem, mix: MixTransition): Double? {
+        if (MixLanes.effectKind(MixLanes.effectsOf(mix)) != EffectKind.ECHO) return null
+        val grid = pathOf(outgoing)?.let { path ->
+            withTimeoutOrNull(ANALYSIS_TIMEOUT_MS) { transitionAnalyzer.beatGridFor(path, end = true) }
+        }
+        return grid?.beatMs ?: trackBpmRepository.bpmFor(outgoing)?.takeIf { it > 0f }?.let { 60_000.0 / it }
     }
 
     private fun pathOf(item: MediaItem): String? =

@@ -248,12 +248,14 @@ private fun MixEditorContent(
     val windowOptions = remember(state.from, state.fromBpm) { state.windowOptions.toImmutableList() }
     // The lane the timeline shows; its lines are drawn over the waveforms (only Volume's can be dragged).
     var focusedLane by rememberSaveable { mutableStateOf(MixLane.VOLUME) }
-    // Fixed hues (Spotify draws EQ yellow and Filter pink), nudged towards the theme.
+    // Fixed hues (Spotify draws EQ yellow, Filter pink and Effects white), nudged towards the theme.
     val primary = MaterialTheme.colorScheme.primary
-    val laneColors = remember(primary) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val laneColors = remember(primary, onSurface) {
         LaneColors(
             eq = androidx.compose.ui.graphics.lerp(Color(0xFFE8B730), primary, 0.12f),
             filter = androidx.compose.ui.graphics.lerp(Color(0xFFE56F9B), primary, 0.12f),
+            effects = onSurface,
         )
     }
 
@@ -385,14 +387,15 @@ private fun MixEditorContent(
                 selected = focusedLane == MixLane.FILTER,
                 onClick = { focusedLane = MixLane.FILTER; openSheet = MixLane.FILTER },
             )
-            // The lanes still to come: shown with what the style will set on them, but not playable yet.
-            val recipe = MixStyles.recipes[mix.preset]
-            val none = stringResource(R.string.dj_mix_lane_none)
-            ComingLaneRow(
+            MixLaneRow(
                 label = stringResource(R.string.dj_mix_lane_effects),
-                accent = MaterialTheme.colorScheme.onSurface,
-                value = recipe?.effects?.takeIf { it != EffectPreset.NONE }?.let { effectPresetLabel(it) } ?: none,
+                accent = laneColors.effects,
+                value = effectPresetLabel(MixLanes.effectsOf(mix)),
+                selected = focusedLane == MixLane.EFFECTS,
+                onClick = { focusedLane = MixLane.EFFECTS; openSheet = MixLane.EFFECTS },
             )
+            // The lane still to come: shown, but not playable yet.
+            val none = stringResource(R.string.dj_mix_lane_none)
             ComingLaneRow(
                 label = stringResource(R.string.dj_mix_lane_looping),
                 accent = MaterialTheme.colorScheme.outline,
@@ -406,6 +409,7 @@ private fun MixEditorContent(
                     MixLane.VOLUME -> R.string.dj_mix_volume_hint
                     MixLane.EQ -> R.string.dj_mix_eq_hint
                     MixLane.FILTER -> R.string.dj_mix_filter_hint
+                    MixLane.EFFECTS -> R.string.dj_mix_effects_hint
                 }
             ),
             style = MaterialTheme.typography.bodySmall,
@@ -445,6 +449,18 @@ private fun MixEditorContent(
                 label = { filterPresetLabel(it) },
                 onSelect = {
                     viewModel.applyFilterPreset(it)
+                    openSheet = null
+                },
+                onDismiss = { openSheet = null },
+            )
+            MixLane.EFFECTS -> LanePresetSheet(
+                title = stringResource(R.string.dj_mix_lane_effects),
+                accent = laneColors.effects,
+                options = EffectPreset.entries,
+                selected = MixLanes.effectsOf(mix),
+                label = { effectPresetLabel(it) },
+                onSelect = {
+                    viewModel.applyEffectPreset(it)
                     openSheet = null
                 },
                 onDismiss = { openSheet = null },
@@ -526,9 +542,9 @@ private fun PresetStrip(selected: MixPreset, onSelect: (MixPreset) -> Unit) {
 }
 
 /** The lanes that can be shown on the timeline and set from a sheet. */
-private enum class MixLane { VOLUME, EQ, FILTER }
+private enum class MixLane { VOLUME, EQ, FILTER, EFFECTS }
 
-private data class LaneColors(val eq: Color, val filter: Color)
+private data class LaneColors(val eq: Color, val filter: Color, val effects: Color)
 
 /** A lane (Volume, EQ, Filter): its colour, name and current preset; [selected] is the one on the timeline. */
 @Composable
@@ -870,6 +886,7 @@ private fun MixTimeline(
     val currentFocus by rememberUpdatedState(focus)
     val eqLines = remember(MixLanes.eqOf(mix)) { MixLanes.eqLines(MixLanes.eqOf(mix)) }
     val filterLines = remember(MixLanes.filterOf(mix)) { MixLanes.filterLines(MixLanes.filterOf(mix)) }
+    val effectLines = remember(MixLanes.effectsOf(mix)) { MixLanes.effectLines(MixLanes.effectsOf(mix)) }
     val onShiftOut by rememberUpdatedState(onShiftOutgoing)
     val onShiftIn by rememberUpdatedState(onShiftIncoming)
     val onMove by rememberUpdatedState(onMoveKeyframe)
@@ -1023,6 +1040,11 @@ private fun MixTimeline(
                     pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 6.dp.toPx())),
                 )
                 drawLaneLine(g, line, outgoing, laneColors.filter)
+            }
+            MixLane.EFFECTS -> listOf(true to effectLines.outgoing, false to effectLines.incoming).forEach { (outgoing, lines) ->
+                // The send solid (how much goes into the reverb or echo), the dry song dashed.
+                drawLaneLine(g, lines.dry, outgoing, laneColors.effects.copy(alpha = 0.5f), dashed = true, skipFlat = true)
+                drawLaneLine(g, lines.send, outgoing, laneColors.effects, skipFlat = true)
             }
             MixLane.VOLUME -> Unit
         }

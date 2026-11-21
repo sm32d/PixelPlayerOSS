@@ -171,6 +171,75 @@ class MixDspTest {
         assertTrue(after < -30, "after the window (song time 1.5..2 s): $after dB")
     }
 
+    private fun effect(kind: EffectKind, send: Float, dry: Float, echoDelayMs: Double = 250.0) = MixDspAutomation(
+        startUs = 0L, endUs = 10_000_000L,
+        low = flat(1f), mid = flat(1f), high = flat(1f), filter = flat(MixLanes.FILTER_NEUTRAL),
+        effect = kind, send = flat(send), dry = flat(dry), echoDelayMs = echoDelayMs,
+    )
+
+    /** Runs [buf] through a fresh core in sink-sized chunks. */
+    private fun run(buf: FloatArray, auto: MixDspAutomation) {
+        val core = MixDspCore(rate, channels)
+        val frames = buf.size / channels
+        var f = 0
+        while (f < frames) {
+            val n = minOf(2_048, frames - f)
+            val chunk = buf.copyOfRange(f * channels, (f + n) * channels)
+            core.process(chunk, n, f * 1_000_000L / rate, auto)
+            chunk.copyInto(buf, f * channels)
+            f += n
+        }
+    }
+
+    @Test
+    fun `the reverb rings on after the sound stops, and dies away`() {
+        // 100 ms of 440 Hz after the processing has faded in, then 4 s of silence.
+        val buf = FloatArray(rate * 5 * channels)
+        val start = rate / 10
+        val burst = sine(440.0, 0.1)
+        burst.copyInto(buf, start * channels)
+        run(buf, effect(EffectKind.REVERB, send = 1f, dry = 0f))
+        val end = start + rate / 10
+        val early = rms(buf, end + rate / 5, end + rate * 2 / 5)
+        val late = rms(buf, end + rate * 3, end + rate * 3 + rate / 5)
+        assertTrue(early > 0.01, "tail 0.2-0.4 s after: $early")
+        assertTrue(db(late / early) < -30, "tail 3 s on is ${db(late / early)} dB below")
+        assertTrue(buf.all { abs(it) <= 1f }, "never clips")
+    }
+
+    @Test
+    fun `echo repeats fall on the delay, each quieter`() {
+        // One click once the processing has faded in.
+        val buf = FloatArray(rate * 2 * channels)
+        val click = rate / 10
+        buf[click * channels] = 1f
+        buf[click * channels + 1] = 1f
+        run(buf, effect(EffectKind.ECHO, send = 1f, dry = 0f, echoDelayMs = 250.0))
+        val delay = rate / 4
+        fun peakNear(frame: Int) = (frame - 3..frame + 3).maxOf { abs(buf[it * channels]) }
+        val first = peakNear(click + delay)
+        val second = peakNear(click + 2 * delay)
+        assertTrue(first > 0.3f, "first repeat: $first")
+        assertTrue(second in 0.05f..first * 0.8f, "second repeat: $second (first $first)")
+        // Nothing in between.
+        assertTrue(peakNear(click + delay / 2) < 0.01f)
+    }
+
+    @Test
+    fun `a loud song into a full send stays bounded`() {
+        val buf = sine(110.0, 3.0, amplitude = 0.9)
+        run(buf, effect(EffectKind.REVERB, send = 1f, dry = 1f))
+        val tail = buf.copyOfRange(buf.size / 2, buf.size)
+        assertTrue(tail.maxOf { abs(it) } <= 1f)
+        assertTrue(rms(buf, buf.size / channels / 2, buf.size / channels) > 0.3, "still plays the song")
+    }
+
+    @Test
+    fun `an effect with its send closed and full dry changes nothing`() {
+        assertEquals(0.0, gainDb(1_000.0, effect(EffectKind.ECHO, send = 0f, dry = 1f)), 0.1)
+        assertTrue(effect(EffectKind.REVERB, send = 0f, dry = 1f).isNeutral)
+    }
+
     @Test
     fun `clearing the lanes fades back to the dry sound and stops`() {
         val core = MixDspCore(rate, channels)

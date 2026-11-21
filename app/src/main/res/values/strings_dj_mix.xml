@@ -73,5 +73,6 @@
     <string name="dj_mix_fx_echo_half_out_end">Echo ½ out end</string>
     <string name="dj_mix_volume_hint">Drag the lines to shape each song. Long-press to add or remove a point. Drag a lane to slide the song.</string>
     <string name="dj_mix_eq_hint">The solid line is each song\'s bass, the dashed ones its mids and highs: top is untouched, bottom is removed.</string>
+    <string name="dj_mix_effects_hint">The solid line is how much of the outgoing song goes into the reverb or echo, the dashed one how much of the song itself you still hear. The effect rings on after the song stops.</string>
     <string name="dj_mix_filter_hint">The dashed centre line is no filter. Below it the song is muffled (low-pass), above it thinned out (high-pass).</string>
 </resources>

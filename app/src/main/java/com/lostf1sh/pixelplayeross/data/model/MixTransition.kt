@@ -82,6 +82,8 @@ data class MixTransition(
     val eq: EqPreset? = null,
     /** The Filter lane's preset; null as for [eq]. */
     val filter: FilterPreset? = null,
+    /** The Effects lane's preset (reverb or echo on the outgoing song); null as for [eq]. */
+    val effects: EffectPreset? = null,
 ) {
     val beatmatchOn: Boolean get() = beatmatch != false
 

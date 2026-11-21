@@ -11,6 +11,7 @@ import timber.log.Timber
 import com.lostf1sh.pixelplayeross.data.media.TagBpmReader
 import com.lostf1sh.pixelplayeross.data.media.WaveformData
 import com.lostf1sh.pixelplayeross.data.media.WaveformRepository
+import com.lostf1sh.pixelplayeross.data.model.EffectPreset
 import com.lostf1sh.pixelplayeross.data.model.EqPreset
 import com.lostf1sh.pixelplayeross.data.model.FilterPreset
 import com.lostf1sh.pixelplayeross.data.model.MixPreset
@@ -246,6 +247,11 @@ class MixEditorViewModel @Inject constructor(
         MixLanes.pinned(it).copy(eq = preset, preset = MixPreset.CUSTOM)
     }
 
+    /** Sets the Effects lane; the mix is then Custom. */
+    fun applyEffectPreset(preset: EffectPreset) = editMix(markCustom = false) {
+        MixLanes.pinned(it).copy(effects = preset, preset = MixPreset.CUSTOM)
+    }
+
     /** Sets the Filter lane; the mix is then Custom. */
     fun applyFilterPreset(preset: FilterPreset) = editMix(markCustom = false) {
         MixLanes.pinned(it).copy(filter = preset, preset = MixPreset.CUSTOM)
@@ -434,7 +440,14 @@ class MixEditorViewModel @Inject constructor(
         } else {
             null
         }
-        preview.start(Uri.fromFile(File(from.path)), Uri.fromFile(File(to.path)), mix.copy(inStartMs = sync?.inStartMs ?: mix.inStartMs), sync)
+        val beatMs = state.fromGrid?.beatMs ?: state.fromBpm?.takeIf { it > 0f }?.let { 60_000.0 / it }
+        preview.start(
+            Uri.fromFile(File(from.path)),
+            Uri.fromFile(File(to.path)),
+            mix.copy(inStartMs = sync?.inStartMs ?: mix.inStartMs),
+            sync,
+            beatMs,
+        )
     }
 
     fun stopPreview() {

@@ -2,8 +2,7 @@ package com.lostf1sh.pixelplayeross.data.model
 
 /*
  * Named presets of the lanes that come after Volume, as Spotify's Mix editor lists them (see
- * MixStyles for each style's recipe). EQ and Filter are played (MixLanes, MixDspProcessor);
- * Effects are recorded so the recipes are complete and are played once those effects exist.
+ * MixStyles for each style's recipe). They are played by MixLanes and MixDspProcessor.
  */
 
 /** EQ lane: how the songs' bass (and, for 3-band fade, mids and highs) hand over. */

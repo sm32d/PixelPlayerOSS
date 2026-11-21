@@ -50,9 +50,16 @@ class MixPreviewPlayer(
      * Starts the preview. A player that can't be set up (bad position, unreadable file, platform
      * refusal) ends the preview and is logged; it must never take the app down with it.
      */
-    fun start(outgoingUri: Uri, incomingUri: Uri, mix: MixTransition, sync: Beatmatch.Sync? = null) {
+    fun start(
+        outgoingUri: Uri,
+        incomingUri: Uri,
+        mix: MixTransition,
+        sync: Beatmatch.Sync? = null,
+        /** The outgoing song's beat length, for the echo (see [MixLanes.automationFor]). */
+        beatMs: Double? = null,
+    ) {
         try {
-            startPlayers(outgoingUri, incomingUri, mix, sync)
+            startPlayers(outgoingUri, incomingUri, mix, sync, beatMs)
         } catch (e: IllegalArgumentException) {
             Timber.tag("MixPreview").w(e, "Preview could not start (out=%d in=%d)", mix.outPointMs, mix.inStartMs)
             stop()
@@ -67,13 +74,19 @@ class MixPreviewPlayer(
      * the window, is pulled into step ([BeatLock]), plays the window at the matched speed and eases
      * back to its own tempo afterwards, as in playback.
      */
-    private fun startPlayers(outgoingUri: Uri, incomingUri: Uri, mix: MixTransition, sync: Beatmatch.Sync?) {
+    private fun startPlayers(
+        outgoingUri: Uri,
+        incomingUri: Uri,
+        mix: MixTransition,
+        sync: Beatmatch.Sync?,
+        beatMs: Double?,
+    ) {
         val incomingSpeed = sync?.speed ?: 1.0
         stop()
         val leadIn = minOf(LEAD_IN_MS, mix.outPointMs).coerceAtLeast(0L)
 
         // EQ and Filter lanes, on each song's own timeline as in playback.
-        val outDsp = MixDspProcessor().apply { automation = MixLanes.automationFor(mix, outgoing = true) }
+        val outDsp = MixDspProcessor().apply { automation = MixLanes.automationFor(mix, outgoing = true, beatMs = beatMs) }
         val inDsp = MixDspProcessor().apply {
             automation = MixLanes.automationFor(mix, outgoing = false, incomingSpeed = incomingSpeed)
         }

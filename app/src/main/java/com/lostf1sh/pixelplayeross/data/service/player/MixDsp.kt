@@ -2,10 +2,13 @@ package com.lostf1sh.pixelplayeross.data.service.player
 
 import com.lostf1sh.pixelplayeross.data.model.VolumeKeyframe
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.pow
+import kotlin.math.sign
 import kotlin.math.sin
 import kotlin.math.tan
+import kotlin.math.tanh
 
 /**
  * The EQ and filter lines of one song during a mix, placed on that song's own timeline
@@ -19,6 +22,12 @@ class MixDspAutomation(
     val mid: List<VolumeKeyframe>,
     val high: List<VolumeKeyframe>,
     val filter: List<VolumeKeyframe>,
+    /** The effect on the Effects lane, fed by [send] (0..1) while [dry] (0..1) of the song is heard. */
+    val effect: EffectKind = EffectKind.NONE,
+    val send: List<VolumeKeyframe> = listOf(VolumeKeyframe(0f, 0f), VolumeKeyframe(1f, 0f)),
+    val dry: List<VolumeKeyframe> = listOf(VolumeKeyframe(0f, 1f), VolumeKeyframe(1f, 1f)),
+    /** Time between echo repeats. */
+    val echoDelayMs: Double = 250.0,
 ) {
     /** Window progress (0..1) at song time [timeUs]. */
     fun progressAt(timeUs: Long): Float {
@@ -30,17 +39,20 @@ class MixDspAutomation(
     fun midAt(p: Float) = MixEnvelope.volumeAt(mid, p)
     fun highAt(p: Float) = MixEnvelope.volumeAt(high, p)
     fun filterAt(p: Float) = MixEnvelope.volumeAt(filter, p)
+    fun sendAt(p: Float) = if (effect == EffectKind.NONE) 0f else MixEnvelope.volumeAt(send, p)
+    fun dryAt(p: Float) = if (effect == EffectKind.NONE) 1f else MixEnvelope.volumeAt(dry, p)
 
     /** True when nothing on any line changes the sound. */
     val isNeutral: Boolean
         get() = listOf(low, mid, high).all { line -> line.all { it.v >= 1f } } &&
-            filter.all { it.v == MixLanes.FILTER_NEUTRAL }
+            filter.all { it.v == MixLanes.FILTER_NEUTRAL } &&
+            (effect == EffectKind.NONE || (send.all { it.v <= 0f } && dry.all { it.v >= 1f }))
 
     override fun toString(): String = "MixDspAutomation(%d..%d ms)".format(startUs / 1000, endUs / 1000)
 }
 
 /**
- * The mix EQ and filter for one stream of interleaved float samples.
+ * The mix EQ, filter and effects for one stream of interleaved float samples.
  *
  * EQ: the signal is split into bass (< [LOW_HZ]), mids and highs (> [HIGH_HZ]) with
  * Linkwitz-Riley crossovers, each band scaled by its line, and summed back. With every gain at 1
@@ -48,6 +60,8 @@ class MixDspAutomation(
  *
  * Filter: a state-variable filter swept on a log scale, low-pass from 20 kHz down to [LP_MIN_HZ]
  * or high-pass from 20 Hz up to [HP_MAX_HZ], with a little resonance as on a DJ mixer.
+ *
+ * Effects: a reverb or a feedback echo, fed by the send line, added to the song at its dry level.
  *
  * Parameters are read once per [BLOCK] frames and gains glide across each block, so automation
  * never steps. Turning the processing on or off (an automation set or cleared) crossfades between
@@ -76,6 +90,12 @@ class MixDspCore(private val sampleRate: Int, private val channels: Int) {
     private var lastLow = 1f
     private var lastMid = 1f
     private var lastHigh = 1f
+    private var lastSend = 0f
+    private var lastDry = 1f
+
+    // Effects, made when first needed (most mixes have none).
+    private var reverb: Array<Reverb>? = null
+    private var echo: Array<Echo>? = null
 
     /** True when nothing is being processed and nothing is fading out: the input can be left as is. */
     fun isIdle(automation: MixDspAutomation?): Boolean = automation == null && wet == 0f
@@ -88,6 +108,16 @@ class MixDspCore(private val sampleRate: Int, private val channels: Int) {
         if (isIdle(automation)) return
         if (wet == 0f) reset()
         val target = if (automation != null) 1f else 0f
+        val effect = automation?.effect ?: EffectKind.NONE
+        val reverbs = if (effect == EffectKind.REVERB) {
+            reverb ?: Array(channels) { Reverb(sampleRate, spread = if (it % 2 == 1) STEREO_SPREAD else 0) }.also { reverb = it }
+        } else null
+        val echoes = if (effect == EffectKind.ECHO) {
+            (echo ?: Array(channels) { Echo(sampleRate) }.also { echo = it }).also { lines ->
+                val delay = (automation!!.echoDelayMs * sampleRate / 1000).toInt()
+                lines.forEach { it.delaySamples = delay }
+            }
+        } else null
         var frame = 0
         while (frame < frames) {
             val n = minOf(BLOCK, frames - frame)
@@ -98,6 +128,8 @@ class MixDspCore(private val sampleRate: Int, private val channels: Int) {
             val mid = p?.let { automation.midAt(it) } ?: lastMid
             val high = p?.let { automation.highAt(it) } ?: lastHigh
             val filterV = p?.let { automation.filterAt(it) } ?: MixLanes.FILTER_NEUTRAL
+            val send = p?.let { automation.sendAt(it) } ?: 0f
+            val dry = p?.let { automation.dryAt(it) } ?: 1f
 
             // Filter coefficients for this block.
             val mode: Int
@@ -125,7 +157,9 @@ class MixDspCore(private val sampleRate: Int, private val channels: Int) {
                 val gl = lastLow + (low - lastLow) * f
                 val gm = lastMid + (mid - lastMid) * f
                 val gh = lastHigh + (high - lastHigh) * f
-                wet = if (target > wet) minOf(target, wet + wetStep) else maxOf(target, wet - wetStep)
+                val gs = lastSend + (send - lastSend) * f
+                val gd = lastDry + (dry - lastDry) * f
+                wet =if (target > wet) minOf(target, wet + wetStep) else maxOf(target, wet - wetStep)
                 val base = (frame + i) * channels
                 for (c in 0 until channels) {
                     val x = buf[base + c].toDouble()
@@ -148,14 +182,34 @@ class MixDspCore(private val sampleRate: Int, private val channels: Int) {
                         ic1[c] = 0.0
                         ic2[c] = 0.0
                     }
+                    // Effects: the song (as EQ'd and filtered) at its dry level, plus what the
+                    // send feeds the reverb or echo; their tails ring on when the send closes.
+                    if (reverbs != null) {
+                        y = softLimit(y * gd + reverbs[c].process(y * gs))
+                    } else if (echoes != null) {
+                        y = softLimit(y * gd + echoes[c].process(y * gs))
+                    }
                     buf[base + c] = (x + (y - x) * wet).toFloat()
                 }
             }
             lastLow = low
             lastMid = mid
             lastHigh = high
+            lastSend = send
+            lastDry = dry
             frame += n
         }
+    }
+
+    /**
+     * A song near full scale plus its reverb or echo can go over it: above [LIMIT_KNEE] the peaks
+     * are rounded off smoothly towards 1 instead of clipping hard. Below it nothing changes.
+     */
+    private fun softLimit(v: Double): Double {
+        val a = abs(v)
+        if (a <= LIMIT_KNEE) return v
+        val room = 1.0 - LIMIT_KNEE
+        return sign(v) * (LIMIT_KNEE + room * tanh((a - LIMIT_KNEE) / room))
     }
 
     private fun tanG(hz: Double): Double = tan(PI * hz.coerceIn(MIN_HZ, nyquistGuard) / sampleRate)
@@ -175,6 +229,84 @@ class MixDspCore(private val sampleRate: Int, private val channels: Int) {
         lastLow = 1f
         lastMid = 1f
         lastHigh = 1f
+        lastSend = 0f
+        lastDry = 1f
+        // Tails don't carry over into a new stream; the buffers are made again when needed.
+        reverb = null
+        echo = null
+    }
+
+    /**
+     * A small Schroeder/Moorer reverb (as in Freeverb): parallel damped combs into series
+     * all-passes. About two seconds of tail. [spread] offsets the right channel's delays so the
+     * two channels don't ring alike (a wider sound).
+     */
+    private class Reverb(sampleRate: Int, spread: Int) {
+        private val scale = sampleRate / 44_100.0
+        private val combs = COMB_LENGTHS.map { DoubleArray(((it + spread) * scale).toInt().coerceAtLeast(1)) }
+        private val combIndex = IntArray(combs.size)
+        private val combStore = DoubleArray(combs.size)
+        private val allPasses = ALLPASS_LENGTHS.map { DoubleArray(((it + spread) * scale).toInt().coerceAtLeast(1)) }
+        private val allPassIndex = IntArray(allPasses.size)
+
+        fun process(input: Double): Double {
+            val x = input * INPUT_GAIN
+            var out = 0.0
+            for (i in combs.indices) {
+                val buf = combs[i]
+                val j = combIndex[i]
+                val y = buf[j]
+                combStore[i] = y * (1 - DAMP) + combStore[i] * DAMP
+                buf[j] = x + combStore[i] * FEEDBACK
+                combIndex[i] = if (j + 1 == buf.size) 0 else j + 1
+                out += y
+            }
+            for (i in allPasses.indices) {
+                val buf = allPasses[i]
+                val j = allPassIndex[i]
+                val b = buf[j]
+                buf[j] = out + b * ALLPASS_GAIN
+                out = b - out
+                allPassIndex[i] = if (j + 1 == buf.size) 0 else j + 1
+            }
+            return out * OUTPUT_GAIN
+        }
+
+        companion object {
+            val COMB_LENGTHS = intArrayOf(1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617).toList()
+            val ALLPASS_LENGTHS = intArrayOf(556, 441, 341, 225).toList()
+            const val FEEDBACK = 0.86
+            const val DAMP = 0.3
+            const val ALLPASS_GAIN = 0.5
+            const val INPUT_GAIN = 0.015
+            const val OUTPUT_GAIN = 3.0
+        }
+    }
+
+    /** A feedback echo: repeats every [delaySamples], each a little quieter and darker. */
+    private class Echo(sampleRate: Int) {
+        private val buf = FloatArray((sampleRate * MAX_DELAY_S).toInt())
+        private var write = 0
+        private var tone = 0.0
+        var delaySamples = sampleRate / 4
+
+        fun process(input: Double): Double {
+            val d = delaySamples.coerceIn(1, buf.size - 1)
+            var read = write - d
+            if (read < 0) read += buf.size
+            val out = buf[read].toDouble()
+            // A gentle low-pass in the loop, like tape: later repeats lose their top end.
+            tone += (out - tone) * TONE
+            buf[write] = (input + tone * FEEDBACK).toFloat()
+            write = if (write + 1 == buf.size) 0 else write + 1
+            return out
+        }
+
+        companion object {
+            const val MAX_DELAY_S = 2.1
+            const val FEEDBACK = 0.55
+            const val TONE = 0.45
+        }
     }
 
     /** RBJ biquad, transposed direct form II. */
@@ -237,6 +369,8 @@ class MixDspCore(private val sampleRate: Int, private val channels: Int) {
         const val FILTER_Q = 0.8
         const val BLOCK = 32
         const val FADE_MS = 30f
+        private const val STEREO_SPREAD = 23
+        private const val LIMIT_KNEE = 0.8
         private const val NEUTRAL_BAND = 0.002f
         private const val BYPASS = 0
         private const val LOW_PASS = 1
