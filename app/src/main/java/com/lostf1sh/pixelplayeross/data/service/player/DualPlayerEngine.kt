@@ -1451,11 +1451,22 @@ class DualPlayerEngine @Inject constructor(
         }
     }
 
-    fun getNextTransitionTarget(currentMediaItem: MediaItem, repeatMode: Int): TransitionTarget? {
+    /**
+     * The song after [currentMediaItem] in the queue. [knownAbsoluteIndex] is where that song is
+     * in the queue, when the caller knows (a song prepared for a transition): a song queued twice
+     * would otherwise be taken for its first copy.
+     */
+    fun getNextTransitionTarget(
+        currentMediaItem: MediaItem,
+        repeatMode: Int,
+        knownAbsoluteIndex: Int? = null,
+    ): TransitionTarget? {
         val snapshot = ensureQueueSnapshot()
         if (snapshot.isEmpty()) return null
 
-        val currentAbsoluteIndex = resolveCurrentAbsoluteIndex(currentMediaItem, snapshot)
+        val currentAbsoluteIndex = knownAbsoluteIndex
+            ?.takeIf { snapshot.getOrNull(it)?.mediaId == currentMediaItem.mediaId }
+            ?: resolveCurrentAbsoluteIndex(currentMediaItem, snapshot)
         if (currentAbsoluteIndex == C.INDEX_UNSET) return null
 
         val targetIndex = when (repeatMode) {

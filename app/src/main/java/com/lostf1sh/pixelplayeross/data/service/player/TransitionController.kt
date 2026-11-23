@@ -477,6 +477,13 @@ class TransitionController @Inject constructor(
         }
 
         storedFlow.distinctUntilChanged().collectLatest { stored ->
+            // The pair's mix was saved again while it is playing: the running mix uses the
+            // prepared player, which scheduling would stop and reset under it. Leave it to finish;
+            // the change is heard the next time this pair plays.
+            if (engine.isTransitionRunning()) {
+                Timber.tag("TransitionDebug").d("Mix: saved change arrived during the mix; it applies next time.")
+                return@collectLatest
+            }
             needsDurationReschedule = false
 
             var duration = player.duration
@@ -500,7 +507,7 @@ class TransitionController @Inject constructor(
                 mixPlaybackState.remove(currentMediaItem.mediaId)
                 engine.cancelNext()
                 engine.setPauseAtEndOfMediaItems(shouldPause = false)
-                startIncomingMixLookahead(nextMediaItem, playlistId)
+                startIncomingMixLookahead(transitionTarget, playlistId)
                 return@collectLatest
             }
 
@@ -568,7 +575,7 @@ class TransitionController @Inject constructor(
             // The incoming song's own mix point, for its seek bar, is worked out on its own job:
             // it may need to listen to a song that isn't analyzed yet, and that must never hold
             // up (or make the current mix miss) its saved point.
-            startIncomingMixLookahead(nextMediaItem, playlistId)
+            startIncomingMixLookahead(transitionTarget, playlistId)
 
             val startAtMs = mix.outPointMs - (sync?.prerollMs ?: 0L)
             while (player.currentPosition < startAtMs && currentCoroutineContext().isActive) {
@@ -700,7 +707,7 @@ class TransitionController @Inject constructor(
      * known yet. Separate from the current song's countdown so it can never delay it; replaced
      * (cancelled) whenever a schedule is rebuilt.
      */
-    private fun startIncomingMixLookahead(incoming: MediaItem, playlistId: String) {
+    private fun startIncomingMixLookahead(incoming: DualPlayerEngine.TransitionTarget, playlistId: String) {
         incomingMixJob?.cancel()
         incomingMixJob = scope.launch {
             repeat(MAX_INCOMING_MIX_ATTEMPTS) {
@@ -720,9 +727,11 @@ class TransitionController @Inject constructor(
      * instead of changing length once the current mix is over. Returns false when it couldn't
      * yet (the prepared song's duration isn't known, or there is no following song).
      */
-    private suspend fun publishIncomingSongMix(incoming: MediaItem, playlistId: String): Boolean {
+    private suspend fun publishIncomingSongMix(target: DualPlayerEngine.TransitionTarget, playlistId: String): Boolean {
+        val incoming = target.mediaItem
         val incomingDuration = engine.preparedNextDurationMs() ?: return false
-        val following = engine.getNextTransitionTarget(incoming, engine.masterPlayer.repeatMode)
+        // By its place in the queue: a song queued twice must not be taken for its other copy.
+        val following = engine.getNextTransitionTarget(incoming, engine.masterPlayer.repeatMode, target.absoluteIndex)
             ?: return true // nothing follows: the song plays to its end, no mix point to show
         val followingItem = following.mediaItem
 
