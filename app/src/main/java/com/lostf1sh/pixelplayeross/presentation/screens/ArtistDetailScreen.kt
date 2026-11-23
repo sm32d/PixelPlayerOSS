@@ -2,6 +2,7 @@
 
 package com.lostf1sh.pixelplayeross.presentation.screens
 
+import com.lostf1sh.pixelplayeross.presentation.components.albumTitleMarquee
 import com.lostf1sh.pixelplayeross.presentation.components.rememberSwipeToQueue
 import com.lostf1sh.pixelplayeross.presentation.navigation.navigateSafely
 import com.lostf1sh.pixelplayeross.presentation.navigation.navigateSafelyReplacing
@@ -71,6 +72,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -541,6 +543,13 @@ fun ArtistDetailScreen(
                                     onToggleExpanded = {
                                         viewModel.setAlbumSectionExpanded(sectionKey, !isExpanded)
                                     },
+                                    onOpenAlbum = {
+                                        if (section.albumId != 0L && section.albumId != -1L) {
+                                            navController.navigateSafely(
+                                                Screen.AlbumDetail.createRoute(section.albumId)
+                                            )
+                                        }
+                                    },
                                     onPlayAlbum = {
                                         section.songs.firstOrNull()?.let { firstSong ->
                                             playerViewModel.showAndPlaySong(firstSong, section.songs)
@@ -845,6 +854,7 @@ private fun CollapsibleAlbumSectionHeader(
     isFirstSection: Boolean,
     isLastSection: Boolean,
     onToggleExpanded: () -> Unit,
+    onOpenAlbum: () -> Unit,
     modifier: Modifier = Modifier,
     onPlayAlbum: () -> Unit
 ) {
@@ -894,13 +904,29 @@ private fun CollapsibleAlbumSectionHeader(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            val canOpenAlbum = section.albumId != 0L && section.albumId != -1L
+            val openAlbumLabel = stringResource(
+                R.string.presentation_batch_d_cd_open_album_title,
+                section.title
+            )
             SmartImage(
                 model = section.albumArtUriString,
-                contentDescription = section.title,
+                contentDescription = if (canOpenAlbum) openAlbumLabel else section.title,
                 targetSize = SmartImageCompactListTargetSize,
                 modifier = Modifier
                     .size(52.dp)
                     .clip(RoundedCornerShape(10.dp))
+                    .then(
+                        if (canOpenAlbum) {
+                            Modifier.clickable(
+                                role = Role.Button,
+                                onClickLabel = openAlbumLabel,
+                                onClick = onOpenAlbum
+                            )
+                        } else {
+                            Modifier
+                        }
+                    )
             )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -908,8 +934,9 @@ private fun CollapsibleAlbumSectionHeader(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.albumTitleMarquee(),
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    softWrap = false
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(

@@ -309,7 +309,8 @@ object AppModule {
         songRepository: SongRepository,
         favoritesDao: FavoritesDao,
         artistImageRepository: ArtistImageRepository,
-        folderTreeBuilder: FolderTreeBuilder
+        folderTreeBuilder: FolderTreeBuilder,
+        jellyfinRepository: com.lostf1sh.pixelplayeross.data.jellyfin.JellyfinRepository
     ): MusicRepository {
         return MusicRepositoryImpl(
             context = context,
@@ -322,7 +323,8 @@ object AppModule {
             songRepository = songRepository,
             favoritesDao = favoritesDao,
             artistImageRepository = artistImageRepository,
-            folderTreeBuilder = folderTreeBuilder
+            folderTreeBuilder = folderTreeBuilder,
+            jellyfinRepository = jellyfinRepository
         )
 
     }
