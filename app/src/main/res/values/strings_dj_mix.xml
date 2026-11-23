@@ -18,6 +18,7 @@
     <string name="dj_mix_load_failed">Couldn\'t load these songs.</string>
     <string name="dj_mix_play_preview_cd">Play transition</string>
     <string name="dj_mix_stop_preview_cd">Stop preview</string>
+    <string name="dj_mix_no_transition_note">No transition: the first song plays to its end, then the next one starts. There is no mix to preview.</string>
     <string name="dj_mix_preview_unavailable">Preview needs both songs to be stored on this device.</string>
     <string name="dj_mix_waveform_unavailable">Can\'t display waveform</string>
     <string name="dj_mix_bpm">%d bpm</string>

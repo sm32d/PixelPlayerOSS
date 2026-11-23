@@ -479,7 +479,8 @@ class MixEditorViewModel @Inject constructor(
         val mix = state.mix ?: return
         val from = state.from ?: return
         val to = state.to ?: return
-        if (!state.canPreview || state.isAnalyzing) return
+        // "No transition" has no join to hear (playback skips the mix for it).
+        if (!state.canPreview || state.isAnalyzing || mix.preset == MixPreset.NO_TRANSITION) return
         // The main player would play over the preview.
         engine.masterPlayer.pause()
         val sync = if (mix.beatmatchOn) {

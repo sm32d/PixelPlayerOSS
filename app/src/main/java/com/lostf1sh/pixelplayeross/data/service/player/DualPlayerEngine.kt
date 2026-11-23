@@ -1574,6 +1574,12 @@ class DualPlayerEngine @Inject constructor(
         val processor = mixDspProcessors[player] ?: return
         val auto = automation?.takeUnless { it.isNeutral }
         if (auto != null) {
+            // Offloaded audio never reaches the processor: move this song onto the PCM path. This
+            // is done when its mix is scheduled, early in the song, and only ever changes anything
+            // for the first song of a mix playlist (later ones were prepared without offload).
+            if (setOffloadAllowed(player, allowed = false)) {
+                Timber.tag("TransitionDebug").d("Mix DSP outgoing: audio offload turned off so its lanes play")
+            }
             val stream = processor.streamTimeUs
             Timber.tag("TransitionDebug").d(
                 "Mix DSP outgoing: processing at %d ms, heard at %d ms",
@@ -1597,14 +1603,15 @@ class DualPlayerEngine @Inject constructor(
         mixDspProcessors.values.forEach { it.automation = null }
     }
 
-    private fun setOffloadAllowed(player: ExoPlayer, allowed: Boolean) {
+    /** Allows or forbids audio offload on [player]; true when that changed anything. */
+    private fun setOffloadAllowed(player: ExoPlayer, allowed: Boolean): Boolean {
         val mode = if (allowed && audioOffloadEnabledForCurrentMode) {
             TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_ENABLED
         } else {
             TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_DISABLED
         }
         val current = player.trackSelectionParameters.audioOffloadPreferences
-        if (current.audioOffloadMode == mode) return
+        if (current.audioOffloadMode == mode) return false
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setAudioOffloadPreferences(
                 TrackSelectionParameters.AudioOffloadPreferences.Builder()
@@ -1613,6 +1620,7 @@ class DualPlayerEngine @Inject constructor(
                     .build()
             )
             .build()
+        return true
     }
 
     suspend fun prepareNext(mediaItem: MediaItem, startPositionMs: Long = 0L) {
@@ -1663,6 +1671,11 @@ class DualPlayerEngine @Inject constructor(
             resetPreparedWindowState()
             Timber.tag("TransitionDebug").e(e, "Failed to prepare next player")
         }
+    }
+
+    /** Moves the song prepared for the next transition to [positionMs] (before it starts playing). */
+    fun repositionNext(positionMs: Long) {
+        playerB?.takeIf { it.mediaItemCount > 0 }?.seekTo(positionMs.coerceAtLeast(0L))
     }
 
     /** Duration of the song prepared for the next transition, or null while it isn't known yet. */
@@ -1825,9 +1838,27 @@ class DualPlayerEngine @Inject constructor(
         val stepMs = if (lock != null) BEAT_LOCK_STEP_MS else 32L
         val startedAtMs = SystemClock.elapsedRealtime()
         var lastMixVolumeLogMs = -MIX_VOLUME_LOG_INTERVAL_MS
+        // A mix's window is measured in the outgoing song's own time, as its EQ, filter, effect
+        // and loop are: at any playback speed they then move together, and a pause holds them all.
+        // (A plain crossfade keeps to the clock.)
+        val windowStartPos = outgoingPlayer.currentPosition
+        // Should the outgoing song stop while the incoming one plays on, the window keeps moving
+        // with the clock rather than leaving the incoming song stuck half-faded.
+        var stallCreditMs = 0L
+        var lastTickMs = startedAtMs
 
         while (true) {
-            val elapsed = (SystemClock.elapsedRealtime() - startedAtMs).coerceAtMost(duration)
+            val now = SystemClock.elapsedRealtime()
+            if (mix != null && !outgoingPlayer.isPlaying && incomingPlayer.isPlaying) {
+                stallCreditMs += ((now - lastTickMs) * outgoingPlayer.playbackParameters.speed).toLong()
+            }
+            lastTickMs = now
+            val elapsed = if (mix != null) {
+                if (outgoingPlayer.playbackState == Player.STATE_ENDED) duration
+                else (outgoingPlayer.currentPosition - windowStartPos + stallCreditMs).coerceIn(0L, duration)
+            } else {
+                (now - startedAtMs).coerceAtMost(duration)
+            }
             val progress = (elapsed.toFloat() / duration).coerceIn(0f, 1f)
             val volIn = if (mix != null) {
                 MixEnvelope.volumeAt(mix.inVolume, progress)
@@ -1946,8 +1977,17 @@ class DualPlayerEngine @Inject constructor(
             val startedAt = SystemClock.elapsedRealtime()
             val songId = player.currentMediaItem?.mediaId
             var lastLog = -1_000L
+            // The speed this job last set: anything else means someone else set one.
+            var ours = player.playbackParameters.speed
             while (true) {
                 if (player !== playerA) return@launch
+                // The user picked a playback speed meanwhile: theirs wins, the ease-back is over.
+                if (abs(player.playbackParameters.speed - ours) > 1e-3f) {
+                    Timber.tag("TransitionDebug").d(
+                        "Beatmatch ease-back stopped: speed set to %.4f elsewhere", player.playbackParameters.speed,
+                    )
+                    return@launch
+                }
                 // Skipped to another song: it plays at the user's speed straight away.
                 if (player.currentMediaItem?.mediaId != songId) {
                     player.setPlaybackSpeed(baseSpeed)
@@ -1957,7 +1997,10 @@ class DualPlayerEngine @Inject constructor(
                 val factor = Beatmatch.easeBackStep(speed, elapsed)
                 val target = (baseSpeed * factor).toFloat()
                 // Only on a step: setting the same speed again is free, a new one is a tiny glitch.
-                if (abs(player.playbackParameters.speed - target) > 1e-4f) player.setPlaybackSpeed(target)
+                if (abs(player.playbackParameters.speed - target) > 1e-4f) {
+                    player.setPlaybackSpeed(target)
+                    ours = target
+                }
                 if (elapsed - lastLog >= 2_000L || factor == 1.0) {
                     lastLog = elapsed
                     Timber.tag("TransitionDebug").d("Beatmatch ease-back t=%dms speed=%.4f", elapsed, player.playbackParameters.speed)

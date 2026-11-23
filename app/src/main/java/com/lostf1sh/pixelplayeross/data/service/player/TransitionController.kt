@@ -599,6 +599,9 @@ class TransitionController @Inject constructor(
             // Too late to pull the incoming song into step before the window (a seek right up to
             // the mix point): it then plays as drawn, at its own tempo.
             val inStep = sync?.takeIf { player.currentPosition < mix.outPointMs - BEATMATCH_MIN_PREROLL_MS }
+            // Prepared at the pre-roll point, a little before where it should start: without the
+            // pre-roll it must start where the mix says, or it would play that bit early.
+            if (sync != null && inStep == null) engine.repositionNext(mix.inStartMs)
             // Started late (or shortened): the lanes follow the window that really plays, as the
             // volume lines do.
             val startedLate = sync == null && player.currentPosition > mix.outPointMs + LATE_START_MS

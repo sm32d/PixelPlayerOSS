@@ -322,7 +322,8 @@ private fun MixEditorContent(
 
                 FilledIconButton(
                     onClick = viewModel::togglePreview,
-                    enabled = state.canPreview,
+                    // "No transition" plays the songs one after the other: there is no join to hear.
+                    enabled = state.canPreview && mix.preset != MixPreset.NO_TRANSITION,
                     modifier = Modifier.align(Alignment.Center).size(52.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = MaterialTheme.colorScheme.secondaryContainer,
@@ -348,6 +349,14 @@ private fun MixEditorContent(
 
         SongHeader(song = to, bpm = state.toBpm, accent = incomingColor)
 
+        if (state.canPreview && mix.preset == MixPreset.NO_TRANSITION) {
+            Text(
+                text = stringResource(R.string.dj_mix_no_transition_note),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+        }
         if (!state.canPreview) {
             Text(
                 text = stringResource(R.string.dj_mix_preview_unavailable),
